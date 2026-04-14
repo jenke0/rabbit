@@ -228,21 +228,18 @@ class ID(Mapping):
         # original_shape = [24, 2, 10, 6] 
         # hlt_shape = [24, 2, 9, 6]
        
-        # h3 = tf.reshape(h3, original_shape)
-        # h2 = tf.reshape(h2, hlt_shape) ## need to make sure this reshaping is in the correct order
-        # h1 = tf.reshape(h1, original_shape)
-        # h0 = tf.reshape(h0, original_shape)
         
-        h2_iso = h2[tuple(self.low_slice)]
-        # h2_iso = h2[:, :1, :]
-        eps_hlt_expanded = h2_iso*0
+        # h2_iso = h2[tuple(self.low_slice)]
+
+
+        h1_iso = h1[tuple(self.low_slice)]
+        h2_iso = tf.concat([h1_iso, h2], axis = self.pt_ax)
+        
+        eps_hlt_expanded = h1_iso*0
 
         h1_hlt = h1[tuple(self.high_slice)]
-
-        # h1_hlt = h1[:, 1:, :]
-        # tf.reshape(h1, original_shape)
         
-        h2_iso = tf.concat([h2_iso, h2], axis = self.pt_ax)
+        # h2_iso = tf.concat([h2_iso, h2], axis = self.pt_ax)
         eps_iso = 2*h3/(h2_iso + 2*h3)
         ones = h2/h2
         eps_iso = eps_iso[tuple(self.high_slice)]
