@@ -26,7 +26,7 @@ class LIV(POIModel):
         if "all" not in args:
             for coeff in args:
                 if len(coeff) != 4:
-                    if coeff[0] != "d" and  coeff[0] != "c":
+                    if  coeff[0] != "c":# coeff[0] != "d" and 
                         if len(coeff) == 1: ##u, for example
                             complete_args.append(f"cxx{coeff}")   
                             complete_args.append(f"dxx{coeff}")  
@@ -40,8 +40,8 @@ class LIV(POIModel):
                             complete_args.append(f"c{coeff}u")   
                             complete_args.append(f"d{coeff}u")
                             complete_args.append(f"c{coeff}d")   
-                            complete_args.append(f"c{coeff}s")   
-                            complete_args.append(f"d{coeff}s")
+                            # complete_args.append(f"c{coeff}s")   
+                            # complete_args.append(f"d{coeff}s")
                         elif len(coeff) == 3: #xxu, for example
                             complete_args.append(f"c{coeff}")   
                             complete_args.append(f"d{coeff}")  
@@ -55,30 +55,37 @@ class LIV(POIModel):
                     complete_args.append(coeff)
         
         else:
+            quark = ['u', 'd', 's']
             all_coeffs = ["xx", "xy", "xz", "yz"]
-            for coeff in all_coeffs:
-                complete_args.append(f"c{coeff}u")   
-                complete_args.append(f"c{coeff}d")  
-                complete_args.append(f"d{coeff}u") 
-                complete_args.append(f"d{coeff}d")   
-                complete_args.append(f"c{coeff}s") 
-                complete_args.append(f"d{coeff}s") 
+            # for coeff in all_coeffs:
+            #     complete_args.append(f"c{coeff}u")   
+            #     complete_args.append(f"c{coeff}d")  
+            #     complete_args.append(f"d{coeff}u") 
+            #     # complete_args.append(f"d{coeff}d")   
+            #     complete_args.append(f"c{coeff}s") 
+            #     complete_args.append(f"d{coeff}s") 
+            for q in quark:
+                complete_args.append(f"cxx{q}")
+                complete_args.append(f"cxy{q}")
+                complete_args.append(f"cxz{q}")
+                complete_args.append(f"cyz{q}")
+                if q != 'd':
+                    complete_args.append(f"dxx{q}")
+                    complete_args.append(f"dxy{q}")
+                    complete_args.append(f"dxz{q}")
+                    complete_args.append(f"dyz{q}")
             
-        
-        # i want to split this by generation so maybe do cxx1U so it goes type-generation-coefficient or dxx1U
-        ## cxxu, cxxd, dxxu, dxxd
-        
-        
-        ### expect coefficients of the form cu1 which is type-quark
+      
         return cls(indata, complete_args, **kwargs)
     
+
     def __init__(
         self, 
         indata,
         coeff,
         **kwargs
     ):
-        
+        z_pole_bin = 9
         self.indata = indata
         self.is_linear = False
 
@@ -120,12 +127,18 @@ class LIV(POIModel):
         with open(add_dir + sm_filename, "rb") as f:
             precomp_dict = pickle.load(f)
         
-        sm_sigma_eff = tf.cast([precomp_dict["values"][9]]*self.nTimeBins, dtype = tf.float64) 
-        
-        sm_sigma_mll = tf.cast([precomp_dict["values"]]*self.nTimeBins, dtype = tf.float64) 
-        sm_sigma_mll = tf.reshape(sm_sigma_mll, [-1, 1])[:, 0] 
-        sm_sigma_mll_full = tf.concat([sm_sigma_mll, sm_sigma_mll, sm_sigma_mll, sm_sigma_mll], axis = 0)  
-        
+        sm_sigma_eff = tf.cast([precomp_dict["values"][z_pole_bin]]*self.nTimeBins, dtype = tf.float64) 
+
+        mass_axis = np.concatenate((precomp_dict["values"][:z_pole_bin], precomp_dict["values"][z_pole_bin+1:]))
+
+        sm_sigma_mll_lower = tf.cast([precomp_dict["values"][:z_pole_bin]]*self.nTimeBins, dtype = tf.float64)
+        sm_sigma_mll_lower = tf.reshape(sm_sigma_mll_lower, [-1, 1])[:, 0] 
+
+        sm_sigma_mll_upper = tf.cast([precomp_dict["values"][z_pole_bin+1:]]*self.nTimeBins, dtype = tf.float64)
+        sm_sigma_mll_upper = tf.reshape(sm_sigma_mll_upper, [-1, 1])[:, 0] 
+
+
+        sm_sigma_mll = tf.concat([sm_sigma_mll_upper, sm_sigma_mll_lower], axis = 0)
         self.sm_sigma = tf.concat([efficiency_flattening(sm_sigma_eff), sm_sigma_mll], axis = 0) ## flattens it
 
                 
@@ -134,41 +147,61 @@ class LIV(POIModel):
         for c in coeff:
             tensor = c[1:3]
             quark = c[-1]
+            # tensor = c[:2]
+            # quark = c[2]
             
             sme_L_filename = f"summation_{self.Q_min}_to_{self.Q_max}_GeV_{self.nMassBins}_bins_c{tensor}_{quark}_L.pkl"
             #sme[time][mll]
             with open(add_dir + sme_L_filename, "rb") as f:
                 precomp_dict = pickle.load(f)
-            sme_left_eff = tf.cast([precomp_dict["values"][:, 9]], dtype = tf.float64)
+
+            sme_left_eff = tf.cast([precomp_dict["values"][:, z_pole_bin]], dtype = tf.float64)
+            
             sme_left_eff = tf.reshape(sme_left_eff, [-1, 1])[:, 0] ## flattens it
             sme_left_eff_full = efficiency_flattening(sme_left_eff)
             
-            sme_left_mll = tf.cast([precomp_dict["values"]], dtype = tf.float64)
-            sme_left_mll = tf.reshape(sme_left_mll, [-1, 1])[:, 0] ## flattens it
+            sme_left_mass_axis = np.concatenate((precomp_dict["values"][:, :z_pole_bin], precomp_dict["values"][:, z_pole_bin+1:]), axis = 1)
+            sme_left_mass_lower = tf.cast([precomp_dict["values"][:, :z_pole_bin]], dtype = tf.float64)
+            sme_left_mass_lower = tf.reshape(sme_left_mass_lower, [-1, 1])[:, 0]
 
-            sme_left_mll_full = tf.concat([sme_left_mll, sme_left_mll, sme_left_mll, sme_left_mll], axis = 0)
-            
-            sme_left_full = tf.concat([sme_left_eff_full, sme_left_mll], axis = 0)
+            sme_left_mass_upper = tf.cast([precomp_dict["values"][:, z_pole_bin+1:]], dtype = tf.float64)
+            sme_left_mass_upper = tf.reshape(sme_left_mass_upper, [-1, 1])[:, 0]
+
+            # sme_left_mll = tf.cast([sme_left_mass_axis], dtype = tf.float64)
+            # sme_left_mll = tf.reshape(sme_left_mll, [-1, 1])[:, 0] ## flattens it
+
+            sme_left_full = tf.concat([sme_left_eff_full, sme_left_mass_upper,sme_left_mass_lower], axis = 0)
+            # sme_left_full = tf.concat([sme_left_eff_full, sme_left_mass_lower, sme_left_mass_upper], axis = 0)
 
 
             sme_R_filename = sme_L_filename[:-5] + "R" + sme_L_filename[-4:]
             #sme[time][mll]
             with open(add_dir + sme_R_filename, "rb") as f:
                 precomp_dict = pickle.load(f)
-            sme_right_eff = tf.cast([precomp_dict["values"][:, 9]], dtype = tf.float64)
+            sme_right_eff = tf.cast([precomp_dict["values"][:, z_pole_bin]], dtype = tf.float64)
             sme_right_eff = tf.reshape(sme_right_eff, [-1, 1])[:, 0] ## flattens it
             sme_right_eff_full = efficiency_flattening(sme_right_eff)
             
-            sme_right_mll = tf.cast([precomp_dict["values"]], dtype = tf.float64)
-            sme_right_mll = tf.reshape(sme_right_mll, [-1, 1])[:, 0] ## flattens it
+            # sme_right_mass_axis = np.concatenate((precomp_dict["values"][:, :z_pole_bin], precomp_dict["values"][:, z_pole_bin+1:]), axis = 1)
+            # sme_right_mll = tf.cast([sme_right_mass_axis], dtype = tf.float64)
+            # sme_right_mll = tf.reshape(sme_right_mll, [-1, 1])[:, 0] ## flattens it
 
-            sme_right_mll_full = tf.concat([sme_right_mll, sme_right_mll, sme_right_mll, sme_right_mll], axis = 0)
-            sme_right_full = tf.concat([sme_right_eff_full, sme_right_mll], axis = 0)
+            sme_right_mass_lower = tf.cast([precomp_dict["values"][:, :z_pole_bin]], dtype = tf.float64)
+            sme_right_mass_lower = tf.reshape(sme_right_mass_lower, [-1, 1])[:, 0]
+
+            sme_right_mass_upper = tf.cast([precomp_dict["values"][:, z_pole_bin+1:]], dtype = tf.float64)
+            sme_right_mass_upper = tf.reshape(sme_right_mass_upper, [-1, 1])[:, 0]
+
+            sme_right_full = tf.concat([sme_right_eff_full, sme_right_mass_upper, sme_right_mass_lower], axis = 0)
             
             if c[0] == 'd':
                 sme_all.append(1/2*(sme_left_full - sme_right_full))
             elif c[0] == 'c':
                 sme_all.append(1/2*(sme_left_full + sme_right_full))
+            # if c[-1] == "L":
+            #     sme_all.append(sme_left_full)
+            # elif c[-1] == "R":
+            #     sme_all.append(sme_right_full)
         
         self.sme = np.array(sme_all)
 
