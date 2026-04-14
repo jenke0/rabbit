@@ -159,16 +159,18 @@ def plot_matrix(
         std_dev = np.sqrt(np.diag(matrix))
         matrix = matrix / np.outer(std_dev, std_dev)
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    # fig, ax = plt.subplots(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(15, 13))
+
     if args.n_params != 0:
-        start = int(-1*args.n_params)
-        matrix = matrix[start:, start:]
-    pdb.set_trace()
+        start = int(1*args.n_params)
+        # matrix = matrix[start:, start:]
+        matrix = matrix[:start, :start]
     sns.heatmap(
         matrix,
         cmap=cmap,
         annot=args.annot,
-        annot_kws={"fontsize":6},
+        annot_kws={"fontsize":10},
         # fmt=".2g",
         square=True,
         cbar=True,
@@ -235,7 +237,7 @@ def main():
 
     config = plot_tools.load_config(args.config)
 
-    outdir = output_tools.make_plot_dir(args.outpath, eoscp=args.eoscp)
+    outdir = output_tools.make_plot_dir(args.outpath)
 
     # load .hdf5 file first, must exist in combinetf and rabbit
     fitresult, meta = rabbit.io_tools.get_fitresult(args.infile, args.result, meta=True)

@@ -451,18 +451,18 @@ def reweight_wmass_eff():
     
 def get_true_efficiencies():
     file_in = "/work/submit/jbenke/WRemnants/scripts/histmakers/"
-    file_in_name = file_in + "mz_dilepton_liv_scetlib_dyturbo_all_bins.hdf5"  # _maxFiles_20
+    file_in_name = file_in + "mz_dilepton_liv_scetlib_dyturbo_CT18Z_N3p0LL_N2LO_Corr.hdf5"  # _maxFiles_20
     h5file = h5py.File(file_in_name, "r")
     results = input_tools.load_results_h5py(h5file)
     MC_Zmumu = results["Zmumu_2016PostVFP"]["output"]
     data_output = results["SingleMuon_2016PostVFP"]["output"]
     lumi_output = results["SingleMuon_2016PostVFP"]["lumi_outout"]
 
+    ## explicitly comparisons are to be made only with positive versions. can go modify histmaker for negative versions
     iso = MC_Zmumu["pos_iso"].get()
     trig = MC_Zmumu["pos_trig"].get()
     id_hist = MC_Zmumu["pos_ID"].get()
     global_hist = MC_Zmumu["pos_global"].get()
-
     
     weightsum = results["Zmumu_2016PostVFP"]["weight_sum"]
     cross_sec = results["Zmumu_2016PostVFP"]["dataset"]["xsec"]
@@ -475,6 +475,7 @@ def get_true_efficiencies():
     iso_corr = mc_scaling(
         iso.copy(), time_proj_low, lumi_scaling, weightsum, cross_sec
     )
+    
     trig_corr = mc_scaling(
         trig.copy(), time_proj_low, lumi_scaling, weightsum, cross_sec
     )
@@ -485,9 +486,12 @@ def get_true_efficiencies():
     global_corr = mc_scaling(
         global_hist.copy(), time_proj_low, lumi_scaling, weightsum, cross_sec
     )
-
-    true_iso = divideHists(iso_corr, trig_corr)
     true_trig = divideHists(trig_corr, id_corr)
+
+    trig_for_iso = trig_corr.copy()
+    trig_for_iso.values()[:, 0, :] = id_corr.values()[:, 0, :]
+    true_iso = divideHists(iso_corr, trig_for_iso)
+    pdb.set_trace()
     true_id = divideHists(id_corr, global_corr) 
     
     true_trig = remove_low_bins(true_trig)
@@ -795,7 +799,7 @@ def make_plot(
 
                 output_tools.write_index_and_log(
                     outdir+ f"{comp_type}",
-                    outfile,
+                    this_filename,
                     analysis_meta_info={
                         **analysis_meta_info,
                     },
