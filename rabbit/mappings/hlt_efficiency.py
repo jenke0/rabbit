@@ -203,19 +203,12 @@ class HLT(Mapping):
         # original_shape = [24, 2, 10, 6] 
         # hlt_shape = [24, 2, 9, 6]
         
-        
         h1_iso = h1[tuple(self.low_slice)]
         h2_iso = tf.concat([h1_iso, h2], axis = self.pt_ax)
-        
-        
-        # h2_iso = h2[tuple(self.low_slice)]
-        # h2_iso = h2[:, :1, :]
-        h1_hlt = h1[tuple(self.high_slice)]
-        
-        # h2_iso = tf.concat([h2_iso, h2], axis = self.pt_ax)
         eps_iso = 2*h3/(h2_iso + 2*h3)
                 
         ones = h2/h2
+        h1_hlt = h1[tuple(self.high_slice)]
         eps_iso = eps_iso[tuple(self.high_slice)]
         eps_hlt = h2/(h2 + h1_hlt*(ones-eps_iso))
         eps_hlt = tf.reshape(eps_hlt, [-1])

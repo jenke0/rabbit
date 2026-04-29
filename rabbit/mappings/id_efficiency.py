@@ -227,26 +227,19 @@ class ID(Mapping):
         h0 = self.h0.select(observables, inclusive=True)
         # original_shape = [24, 2, 10, 6] 
         # hlt_shape = [24, 2, 9, 6]
-       
-        
-        # h2_iso = h2[tuple(self.low_slice)]
 
 
         h1_iso = h1[tuple(self.low_slice)]
         h2_iso = tf.concat([h1_iso, h2], axis = self.pt_ax)
-        
-        eps_hlt_expanded = h1_iso*0
-
-        h1_hlt = h1[tuple(self.high_slice)]
-        
-        # h2_iso = tf.concat([h2_iso, h2], axis = self.pt_ax)
         eps_iso = 2*h3/(h2_iso + 2*h3)
+                
         ones = h2/h2
+        h1_hlt = h1[tuple(self.high_slice)]
         eps_iso = eps_iso[tuple(self.high_slice)]
         eps_hlt = h2/(h2 + h1_hlt*(ones-eps_iso))
-        
+
+        eps_hlt_expanded = h1_iso*0
         eps_hlt_expanded = tf.concat([eps_hlt_expanded, eps_hlt], axis = self.pt_ax)
-       
         eps_id = h1/(h1 + h0*(1-eps_hlt_expanded))
         eps_id = tf.reshape(eps_id, [-1])
         return eps_id

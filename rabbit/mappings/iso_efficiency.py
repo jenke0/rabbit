@@ -191,8 +191,7 @@ class ISO(Mapping):
         h3 = self.h3.select(observables, inclusive=True)
         h2 = self.h2.select(observables, inclusive=True)
         h1 = self.h1.select(observables, inclusive=True)
-        # h3 = tf.reshape(h3, original_shape)
-        # h2 = tf.reshape(h2, hlt_shape) ## need to make sure this reshaping is in the correct order
+        
     
         h1_iso = h1[tuple(self.low_slice)]
         h2_iso = tf.concat([h1_iso, h2], axis = self.pt_ax)
