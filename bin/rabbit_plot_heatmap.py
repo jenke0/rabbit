@@ -466,6 +466,7 @@ def make_plot(
         # sns.color_palette("Spectral", as_cmap=True)
         
         if args.useData  == True:
+            print("using data")
             mesh = ax.pcolormesh(axis_2, axis_1, h_data.values(), cmap='Spectral_r')
         else:
             mesh = ax.pcolormesh(axis_2, axis_1, h_inclusive.values(), cmap='Spectral_r')
@@ -477,26 +478,33 @@ def make_plot(
 
         plot_tools.add_decor(
             ax,
-            outfile,
+            args.title,
             args.subtitle,
             lumi=lumi,  # if args.dataName == "Data" and not args.noData else None,
             loc=args.titlePos,
             text_size=args.legSize,
         )
         
-        ax.set_xlabel(varying_params[1])
-        ax.set_ylabel(varying_params[0])
+        if "pt" in varying_params[0]:
+            ax.set_xlabel("$\eta$")
+            ax.set_ylabel("$p_T$ (GeV)")
+        elif "pt" in varying_params[1]:
+            ax.set_xlabel("$p_T$ (GeV)")
+            ax.set_ylabel("$\eta$")
 
         if args.prefit:
             outfile += "_prefit"
         
         if args.useData == True:
             ax.set_title("Data")
-            outfile += "_data"
+            outfile += "data"
         else:
             ax.set_title("MC") 
-            outfile += "_mc"
+            outfile += "mc"
+        outfile += f'_{args.Mapping[0][0]}'
+
         plot_tools.save_pdf_and_png(outdir, outfile)
+
 
     if root_sf: 
         fig, ax = plt.subplots(figsize=(8, 6))
@@ -504,27 +512,33 @@ def make_plot(
         outfile = f"eta_pt_{args.title}"
         fig.colorbar(mesh, label = 'Efficiency', ax = ax)
 
-
+    plt.clf()
+    fig, ax = plt.subplots(figsize=(8, 6))
 
     ### scale factor
     h_scale = hh.divideHists(h_data, h_inclusive, rel_unc = True, cutoff = 1e-8)
     mesh = ax.pcolormesh(axis_2, axis_1, h_scale.values(), cmap='Spectral_r')
-
+    fig.colorbar(mesh, label = 'SF', ax = ax)
     if not root_sf:
         ax.set_ylim(25, 65)
     plot_tools.add_decor(
         ax,
-        outfile,
+        args.title,
         args.subtitle,
         lumi=lumi,  # if args.dataName == "Data" and not args.noData else None,
         loc=args.titlePos,
         text_size=args.legSize,
     )
     
-    ax.set_xlabel(varying_params[1])
-    ax.set_ylabel(varying_params[0])
-    
 
+    if "pt" in varying_params[0]:
+        ax.set_xlabel("$\eta$")
+        ax.set_ylabel("$p_T$ (GeV)")
+    elif "pt" in varying_params[1]:
+        ax.set_xlabel("$p_T$ (GeV)")
+        ax.set_ylabel("$\eta$")
+
+    # outfile += f'_{args.Mapping[0][0]}'
     if args.prefit:
         outfile += "_prefit"
     
@@ -548,14 +562,14 @@ def make_plot(
         else:
             analysis_meta_info = {"AnalysisOutput": meta["meta_info"]}
 
-    # output_tools.write_index_and_log(
-    #     outdir,
-    #     outfile,
-    #     analysis_meta_info={
-    #         **analysis_meta_info,
-    #         },
-    #         args=args,
-    #     )
+    output_tools.write_index_and_log(
+        outdir,
+        outfile,
+        analysis_meta_info={
+            **analysis_meta_info,
+            },
+            args=args,
+        )
 
 
 def make_plots(

@@ -475,26 +475,24 @@ def get_true_efficiencies():
     iso_corr = mc_scaling(
         iso.copy(), time_proj_low, lumi_scaling, weightsum, cross_sec
     )
-    
     trig_corr = mc_scaling(
         trig.copy(), time_proj_low, lumi_scaling, weightsum, cross_sec
     )
-    
     id_corr = mc_scaling(
         id_hist.copy(), time_proj_low, lumi_scaling, weightsum, cross_sec
     )
     global_corr = mc_scaling(
         global_hist.copy(), time_proj_low, lumi_scaling, weightsum, cross_sec
     )
-    true_trig = divideHists(trig_corr, id_corr)
+
 
     trig_for_iso = trig_corr.copy()
     trig_for_iso.values()[:, 0, :] = id_corr.values()[:, 0, :]
     true_iso = divideHists(iso_corr, trig_for_iso)
-    pdb.set_trace()
+    true_trig = divideHists(trig_corr, id_corr)
+    true_trig = remove_bins(true_trig)
+
     true_id = divideHists(id_corr, global_corr) 
-    
-    true_trig = remove_low_bins(true_trig)
 
     return true_trig, true_id, true_iso
 
@@ -697,11 +695,11 @@ def make_plot(
                         # plt.step(edges, np.concatenate((avg_root, np.array([avg_root[-1]]))), color = "k", label = f"WMass unweighted average", where = "post")
                         plt.step(edges, np.concatenate((weighted_avg_root, np.array([weighted_avg_root[-1]]))), color = "C1", label = f"$m_W$, weighted average", where = "post")
                         # this analysis
-                        plt.step(edges, np.concatenate((vals, np.array([vals[-1]]))), color = 'C0', label = f"This analysis, fitted $\epsilon$", where = "post")
+                        plt.step(edges, np.concatenate((vals, np.array([vals[-1]]))), color = 'C0', label = f"This analysis, extracted $\epsilon$", where = "post")
                         
                         
                         if j != 0 and comp_type == "effMC": 
-                            plt.step(edges, np.concatenate((true_eff_vals, np.array([true_eff_vals[-1]]))), color = 'C2', label = f"This analysis, true $\epsilon$", where = "post")
+                            plt.step(edges, np.concatenate((true_eff_vals, np.array([true_eff_vals[-1]]))), color = 'C2', label = f"This analysis, true MC $\epsilon$", where = "post")
                         
                         plt.legend()
                         plt.title(f"$p_t$ = {other_edges[ind]} to {other_edges[ind+1]} GeV")
@@ -718,8 +716,8 @@ def make_plot(
                             plt.ylabel(f"$\epsilon_{{{args.Mappings[0][0]}}}$")
                         if comp_type == "SF":
                             plt.ylabel(f"$SF_{{{args.Mappings[0][0]}}}$")        
-                        min_val = np.min([np.min(root_result[:, j]), np.min(vals)])
-                        max_val = np.max([np.max(root_result[:, j]), np.max(vals)])
+                        min_val = np.min([np.min(root_result[:, j]), np.min(vals), np.min(true_eff_vals)])
+                        max_val = np.max([np.max(root_result[:, j]), np.max(vals), np.max(true_eff_vals)])
                         plt.ylim(min_val * 0.98, max_val*1.02)
                         
                         
@@ -744,9 +742,9 @@ def make_plot(
                         # plt.step(pt_ax, unweighted_avg_root, color = "C1", label = f"WMass unweighted average", where = "post")
 
 
-                        plt.step(edges, np.concatenate((vals, np.array([vals[-1]]))), color = 'C0', label = f"This analysis, fitted $\epsilon$", where = "post")
+                        plt.step(edges, np.concatenate((vals, np.array([vals[-1]]))), color = 'C0', label = f"This analysis, extracted $\epsilon$", where = "post")
                         if comp_type == "effMC": 
-                            plt.step(edges, np.concatenate((true_eff_vals, np.array([true_eff_vals[-1]]))), color = 'C2', label = f"This analysis, true $\epsilon$", where = "post")
+                            plt.step(edges, np.concatenate((true_eff_vals, np.array([true_eff_vals[-1]]))), color = 'C2', label = f"This analysis, true MC $\epsilon$", where = "post")
                         
                         
                         plt.legend()
@@ -766,8 +764,8 @@ def make_plot(
                             plt.ylabel(f"$\epsilon_{{{args.Mappings[0][0]}}}$")
                         if comp_type == "SF":
                             plt.ylabel(f"$SF_{{{args.Mappings[0][0]}}}$")                        
-                        min_val = np.min([np.min(avg_root), np.min(vals)])
-                        max_val = np.max([np.max(avg_root), np.max(vals)])
+                        min_val = np.min([np.min(avg_root), np.min(vals), np.min(true_eff_vals)])
+                        max_val = np.max([np.max(avg_root), np.max(vals), np.max(true_eff_vals)])
                         plt.ylim(min_val * 0.98, max_val*1.02)
 
                 

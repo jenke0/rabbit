@@ -164,6 +164,9 @@ def parseArgs():
         help="hdf5 file from rabbit or root file from combinetf",
     )
     parser.add_argument(
+        "--noExtraText", action="store_true", help="Suppress extra text"
+    )
+    parser.add_argument(
         "--result",
         default=None,
         type=str,
@@ -477,9 +480,14 @@ def make_plot(
         other_axis = varying_params[1]
         if axis_name == varying_params[1]:
             other_axis = varying_params[0]
-        xlabel = f"{other_axis}" ### for now am going to hard code this in
-        # xlabel = plot_tools.get_axis_label(config, axes_names, args.xlabel)
+        if other_axis == "pt_probe":
+            xlabel = f"$p^{{\ell}}_T$" 
+            ### for now am going to hard code this in
+        elif other_axis == "eta_probe":
+            xlabel = f"$\eta$" ### for now am going to hard code this in
 
+        else:
+            xlabel = "Sideral time (hr)"
         rlabel = args.dataName.replace(" ", r"\ ")
 
         rlabel += r"\,/\,"
@@ -611,27 +619,28 @@ def make_plot(
 
         range_y = max_y - min_y
         
-        if args.title == "HLT":
+        if args.Mappings == "HLT":
             if other_axis == "eta_probe":
                 ax1.set_ylim(min_y - range_y * 0.1, max_y + range_y * 0.35)
             else:
                 ax1.set_ylim(min_y - range_y * 0.05, max_y + range_y * 0.35)
-        if args.title == "ID":
+        if args.Mappings == "ID":
             if other_axis == "eta_probe":
                 ax1.set_ylim(min_y - range_y * 0.05, max_y + range_y * 0.35)
             else:
                 ax1.set_ylim(min_y - range_y * 0.05, max_y + range_y * 0.35)
-        if args.title == "ISO":
+        if args.Mappings == "ISO":
             # ax1.set_ylim(0.8, 1.05)
-            ax1.set_ylim(0.95, 1.02)
+            ax1.set_ylim(0.98, 1.02)
             
-        outfile = f"{other_axis}_{axis_name}_{args.title}"
+        outfile = f"{other_axis}_{axis_name}"
 
         if other_axis == "time":
             ax1.set_xlabel("Sidereal time (hr)")
             
         if args.prefit:
             outfile += "_prefit"
+        outfile += f"_{args.postfix}"
 
         plot_tools.add_decor(
             ax1,
@@ -738,18 +747,19 @@ def make_plot(
             print(f"CHI SQUARED/DOF: {chi_squared/(len(vals)-1)}, DOF: {len(vals)-1}")
             #### SHOULD CODE IN A P VALUE CALCULATOR
             
-            if not root_comp: 
-                hep.histplot(
-                    scale_hist,
-                    histtype = "step",
-                    yerr=True,
-                    color=this_color,
-                    label = f"{axis_name} bin {j}",
-                    binwnorm=binwnorm,
-                    ax=ax1,
-                    zorder = 1,
-                    flow="none",
-                )
+            if int(j) < 3:
+                if not root_comp: 
+                    hep.histplot(
+                        scale_hist,
+                        histtype = "step",
+                        yerr=True,
+                        color=this_color,
+                        label = f"{axis_name} bin {j}",
+                        binwnorm=binwnorm,
+                        ax=ax1,
+                        zorder = 1,
+                        flow="none",
+                    )
             ### should instead structure this to look for the closest pt value or eta value to get the best match
             
 
@@ -768,15 +778,15 @@ def make_plot(
                         plt.errorbar(eta_ax_centers, root_result[:, j], yerr = root_errors[:, j], color = 'k', fmt = ".")
                                            
                         plt.errorbar(edges_centers, vals, yerr = unc, color = 'C0', fmt = ".")
-                        plt.ylabel("scale factor")
+                        plt.ylabel("SF")
                         plt.xlim([eta_ax[0], eta_ax[-1]])
-                        plt.xlabel("eta")
+                        plt.xlabel(r"$\eta$")
                         min_val = np.min([np.min(root_result[:, j]), np.min(vals)])
                         max_val = np.max([np.max(root_result[:, j]), np.max(vals)])
                         plt.ylim(min_val * 0.98, max_val*1.02)
                     
                 elif other_axis == "pt_probe": 
-                    if j > 0:
+                    if j < 0:
                         ind_start = np.where(eta_ax == other_edges[j-1])[0][0]
                         ind_end = np.where(eta_ax == other_edges[j])[0][0]
                         avg_root = np.average(np.concatenate((root_result[ind_start:ind_end, :], root_result[ind_start:ind_end, :][:, -1][:, None]), axis = 1), axis = 0)
@@ -802,9 +812,9 @@ def make_plot(
                     
                 
             ## need a better way of doing this. maybe through standard deviation
-            if args.title == "ID":
-                ax1.set_ylim(0.97, 1.02)
-            elif args.title == "ISO":
+            if args.Mappings == "ID":
+                ax1.set_ylim(0.98, 1.03)
+            elif args.Mappings == "ISO":
                 ax1.set_ylim(0.98, 1.04)
             else:
                 ax1.set_ylim(0.92, 1.04)
@@ -830,6 +840,14 @@ def make_plot(
             outfile += "_scale"
             plot_tools.save_pdf_and_png(outdir, outfile)
        
+        output_tools.write_index_and_log(
+            outdir,
+            outfile,
+            analysis_meta_info={
+                **analysis_meta_info,
+            },
+            args=args,
+        )
 
 def make_plots(
     result,
