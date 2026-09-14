@@ -75,6 +75,8 @@ def main():
         keep_nuisances=args.keepNuisances,
         exclude_nuisances=args.excludeNuisances,
     )
+    print(f"NUMBER OF PARAMETERS: {len(labels)}")
+
     labels, pulls_prefit, constraints_prefit = io_tools.get_pulls_and_constraints(
         fitresult,
         prefit=True,
