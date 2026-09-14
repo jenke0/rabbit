@@ -235,12 +235,14 @@ class ID(Mapping):
                 
         ones = h2/h2
         h1_hlt = h1[tuple(self.high_slice)]
-        eps_iso = eps_iso[tuple(self.high_slice)]
-        eps_hlt = h2/(h2 + h1_hlt*(ones-eps_iso))
+        eps_iso_high = eps_iso[tuple(self.high_slice)]
+        eps_hlt = h2/(h2 + h1_hlt*(ones-eps_iso_high))
 
-        eps_hlt_expanded = h1_iso*0
+        ones = h0/h0
+        eps_hlt_expanded = eps_iso[tuple(self.low_slice)]
         eps_hlt_expanded = tf.concat([eps_hlt_expanded, eps_hlt], axis = self.pt_ax)
-        eps_id = h1/(h1 + h0*(1-eps_hlt_expanded))
+        
+        eps_id = h1/(h1 + h0*(ones-eps_hlt_expanded))
         eps_id = tf.reshape(eps_id, [-1])
         return eps_id
 
