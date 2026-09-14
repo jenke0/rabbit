@@ -1,4 +1,5 @@
 import os
+from copy import deepcopy
 
 import h5py
 import hist
@@ -12,21 +13,20 @@ axis_downUpVar = hist.axis.Regular(
 )
 
 
-def getImpactsAxes(indata, global_impacts=False):
-    if global_impacts:
-        impact_names = list(indata.systs.astype(str))
-    else:
-        impact_names = list(indata.signals.astype(str)) + list(indata.systs.astype(str))
-    return hist.axis.StrCategory(impact_names, name="impacts")
-
-
-def getGroupedImpactsAxes(indata, bin_by_bin_stat=False, per_process=False):
+def getGroupedImpactsAxes(
+    indata, bin_by_bin_stat=False, per_process=False, extra_groups=None
+):
     impact_names = list(indata.systgroups.astype(str))
     impact_names.append("stat")
     if bin_by_bin_stat:
         impact_names.append("binByBinStat")
         if per_process:
             impact_names.extend([f"binByBinStat{p}" for p in indata.procs.astype(str)])
+    # ParamModel-related columns (parameter groups for the traditional
+    # impacts, prior sources for the global impacts) are appended at the
+    # end, matching the column order produced by the impact calculations.
+    if extra_groups:
+        impact_names.extend(extra_groups)
     return hist.axis.StrCategory(impact_names, name="impacts")
 
 
@@ -56,21 +56,35 @@ class Workspace:
     def __init__(self, outdir, outname, fitter, postfix=None):
         self.results = {}
 
+        self.parms = fitter.parms
+        self.npoi = fitter.param_model.npoi
+        self.nparams = fitter.param_model.nparams
+        self.noiidxs = fitter.indata.noiidxs
+
         # some information for the impact histograms
-        self.impact_axis = getImpactsAxes(fitter.indata)
-        self.global_impact_axis = getImpactsAxes(fitter.indata, global_impacts=True)
+        parms = list(fitter.parms.astype(str))
+        # The global impacts report a source per parameter over the whole
+        # vector (unconstrained params are exactly zero), same axis as the
+        # per-parameter (traditional) impacts.
+        self.impact_axis = hist.axis.StrCategory(parms, name="impacts")
+        self.global_impact_axis = hist.axis.StrCategory(parms, name="impacts")
+        # ParamModel impact groups (e.g. SCETlib NP gamma_nu / F_eff) extend
+        # both the traditional and the global grouped axes.
+        param_impact_group_names = [
+            name for name, _ in fitter._resolved_param_impact_groups()
+        ]
         self.grouped_impact_axis = getGroupedImpactsAxes(
-            fitter.indata, bin_by_bin_stat=fitter.binByBinStat, per_process=False
+            fitter.indata,
+            bin_by_bin_stat=fitter.bbstat.enabled,
+            per_process=False,
+            extra_groups=param_impact_group_names,
         )
         self.grouped_global_impact_axis = getGroupedImpactsAxes(
             fitter.indata,
-            bin_by_bin_stat=fitter.binByBinStat,
-            per_process=fitter.binByBinStatMode == "full",
+            bin_by_bin_stat=fitter.bbstat.enabled,
+            per_process=fitter.bbstat.binByBinStatMode == "full",
+            extra_groups=param_impact_group_names,
         )
-
-        self.parms = fitter.parms
-        self.npoi = fitter.poi_model.npoi
-        self.noiidxs = fitter.indata.noiidxs
 
         self.extension = "hdf5"
         self.file_path = self.get_file_path(outdir, outname, postfix)
@@ -103,7 +117,7 @@ class Workspace:
             file_path = f"{parts[0]}_{postfix}.{parts[1]}"
         return file_path
 
-    def dump_obj(self, obj, key, mapping_key=None, channel=None):
+    def dump_obj(self, obj, key, mapping_key=None, channel=None, group=None):
         result = self.results
 
         if mapping_key is not None:
@@ -119,6 +133,13 @@ class Workspace:
             if channel not in result["channels"]:
                 result["channels"][channel] = {}
             result = result["channels"][channel]
+
+        # One further, freely-named level, so a second fit's results can sit
+        # beside the primary one under the same key names.
+        if group is not None:
+            if group not in result:
+                result[group] = {}
+            result = result[group]
 
         result[key] = obj
 
@@ -176,36 +197,94 @@ class Workspace:
         label=None,
         channel=None,
         mapping_key=None,
+        group=None,
+        is_matrix=False,
         flow=False,
     ):
         if not isinstance(axes, (list, tuple, np.ndarray)):
             axes = [axes]
         if start is not None or stop is not None:
-            values = values[start:stop]
+            if is_matrix:
+                values = values[start:stop, start:stop]
+            else:
+                values = values[start:stop]
+
             if variances is not None:
-                variances = variances[start:stop]
+                if is_matrix:
+                    variances = variances[start:stop, start:stop]
+                else:
+                    variances = variances[start:stop]
 
         h = self.hist(name, axes, values, variances, label, flow=flow)
-        self.dump_hist(h, mapping_key, channel)
+        self.dump_hist(h, mapping_key, channel, group=group)
 
     def add_value(self, value, name, *args, **kwargs):
         self.dump_obj(value, name, *args, **kwargs)
 
-    def add_chi2(self, chi2, ndf, prefit, mapping):
+    def add_chi2(self, chi2, ndf, prefit, mapping, saturated=False, edmval=None):
         postfix = "_prefit" if prefit else ""
-        self.add_value(ndf, "ndf" + postfix, mapping.key)
-        self.add_value(chi2, "chi2" + postfix, mapping.key)
+        if saturated:
+            postfix += "_saturated"
+        self.add_value(int(ndf), "ndf" + postfix, mapping.key)
+        self.add_value(float(chi2), "chi2" + postfix, mapping.key)
+        if edmval is not None:
+            self.add_value(float(edmval), "edmval" + postfix, mapping.key)
+
+    def add_minimizer_status(self, status, name="minimizer_status", *args, **kwargs):
+        """Store a :meth:`Fitter.minimizer_status` dict (no-op if ``None``)."""
+        if status is not None:
+            self.add_value(dict(status), name, *args, **kwargs)
+
+    @staticmethod
+    def _parms_axis(parms, name="parms"):
+        return hist.axis.StrCategory(
+            [p.decode() if isinstance(p, bytes) else str(p) for p in parms], name=name
+        )
+
+    def add_named_parms_hist(
+        self, values, parms, hist_name="parms", variances=None, **kwargs
+    ):
+        """Store a postfit parameter vector carrying its own parameter list,
+        for a fit whose model differs from the primary one."""
+        if variances is None:
+            variances = np.full(len(values), np.nan)
+        self.add_hist(
+            hist_name,
+            self._parms_axis(parms),
+            np.asarray(values),
+            variances=variances,
+            **kwargs,
+        )
+
+    def add_named_cov_hist(self, cov, parms, hist_name="cov", **kwargs):
+        """:meth:`add_cov_hist` for a fit with its own parameter list."""
+        self.add_hist(
+            hist_name,
+            [self._parms_axis(parms, "parms_x"), self._parms_axis(parms, "parms_y")],
+            cov,
+            is_matrix=True,
+            **kwargs,
+        )
 
     def add_observed_hists(
-        self, mapping, data_obs, nobs, data_cov_inv=None, nobs_cov_inv=None
+        self,
+        mapping,
+        data_obs,
+        nobs,
+        data_varobs=None,
+        varnobs=None,
+        data_cov_inv=None,
+        nobs_cov_inv=None,
     ):
         hists_data_obs = {}
         hists_nobs = {}
 
         values_data_obs, variances_data_obs, cov_data_obs = mapping.get_data(
-            data_obs, data_cov_inv
+            data_obs, data_varobs, data_cov_inv
         )
-        values_nobs, variances_nobs, cov_nobs = mapping.get_data(nobs, nobs_cov_inv)
+        values_nobs, variances_nobs, cov_nobs = mapping.get_data(
+            nobs, varnobs, nobs_cov_inv
+        )
 
         start = 0
         for channel, info in mapping.channel_info.items():
@@ -245,6 +324,37 @@ class Workspace:
                 **opts,
             )
 
+            if data_cov_inv is not None:
+                axes_x = deepcopy(axes)
+                axes_y = deepcopy(axes)
+                for ax, ay in zip(axes_x, axes_y):
+                    ax.__dict__["name"] = f"{ax.name}_x"
+                    ay.__dict__["name"] = f"{ay.name}_y"
+
+                self.add_hist(
+                    "cov_data_obs",
+                    [*axes_x, *axes_y],
+                    cov_data_obs,
+                    label="covariance of observed number of events in data",
+                    is_matrix=True,
+                    **opts,
+                )
+            if nobs_cov_inv is not None:
+                axes_x = deepcopy(axes)
+                axes_y = deepcopy(axes)
+                for ax, ay in zip(axes_x, axes_y):
+                    ax.__dict__["name"] = f"{ax.name}_x"
+                    ay.__dict__["name"] = f"{ay.name}_y"
+
+                self.add_hist(
+                    "cov_nobs_obs",
+                    [*axes_x, *axes_y],
+                    cov_nobs,
+                    is_matrix=True,
+                    label="covariance of observed number of events in data",
+                    **opts,
+                )
+
             start = stop
 
         return hists_data_obs, hists_nobs
@@ -261,33 +371,6 @@ class Workspace:
             list(self.parms.astype(str)), name="parms_y"
         )
         self.add_hist(hist_name, [axis_parms_x, axis_parms_y], cov)
-
-    def add_nonprofiled_impacts_hist(
-        self,
-        parms,
-        impacts,
-        params_grouped,
-        impacts_grouped,
-        base_name="nonprofiled_impacts",
-    ):
-        axis_impacts = hist.axis.StrCategory(parms, name="impacts")
-        axis_parms = hist.axis.StrCategory(
-            np.array(self.parms).astype(str), name="parms"
-        )
-        self.add_hist(
-            base_name,
-            [axis_impacts, axis_downUpVar, axis_parms],
-            impacts,
-            label="Impacts of non profiled parameter variations",
-        )
-
-        axis_impacts_grouped = hist.axis.StrCategory(params_grouped, name="impacts")
-        name = f"{base_name}_grouped"
-        self.add_hist(
-            name,
-            [axis_impacts_grouped, axis_downUpVar, axis_parms],
-            impacts_grouped,
-        )
 
     def add_limits_hist(
         self, limits, params, cls_list, clb_list=None, base_name="asymptoticLimits"
@@ -384,7 +467,7 @@ class Workspace:
     ):
         # store impacts for all POIs and NOIs
         parms = np.concatenate(
-            [self.parms[: self.npoi], self.parms[self.npoi :][self.noiidxs]]
+            [self.parms[: self.npoi], self.parms[self.nparams :][self.noiidxs]]
         )
 
         # write out histograms
@@ -404,9 +487,31 @@ class Workspace:
             impacts_grouped,
         )
 
-    def add_global_impacts_hists(self, *args, base_name="global_impacts", **kwargs):
-        self.add_impacts_hists(
-            *args, **kwargs, base_name=base_name, global_impacts=True
+    def add_impacts_asym_hist(
+        self,
+        parms,
+        impacts,
+        params_grouped,
+        impacts_grouped,
+        base_name="asym_impacts",
+    ):
+        axis_impacts = hist.axis.StrCategory(parms, name="impacts")
+        axis_parms = hist.axis.StrCategory(
+            np.array(self.parms).astype(str), name="parms"
+        )
+        self.add_hist(
+            base_name,
+            [axis_impacts, axis_downUpVar, axis_parms],
+            impacts,
+            label="Impacts of non profiled parameter variations",
+        )
+
+        axis_impacts_grouped = hist.axis.StrCategory(params_grouped, name="impacts")
+        name = f"{base_name}_grouped"
+        self.add_hist(
+            name,
+            [axis_impacts_grouped, axis_downUpVar, axis_parms],
+            impacts_grouped,
         )
 
     def add_expected_hists(
@@ -417,6 +522,8 @@ class Workspace:
         cov=None,
         impacts=None,
         impacts_grouped=None,
+        gaussian_impacts=None,
+        gaussian_impacts_grouped=None,
         process_axis=False,
         name=None,
         label=None,
@@ -471,20 +578,34 @@ class Workspace:
             )
 
             if impacts is not None:
-                axis_impacts = self.global_impact_axis
                 self.add_hist(
                     f"{name}_global_impacts",
-                    [*hist_axes, axis_impacts],
+                    [*hist_axes, self.global_impact_axis],
                     impacts,
                     **opts,
                 )
 
             if impacts_grouped is not None:
-                axis_impacts_grouped = self.grouped_global_impact_axis
                 self.add_hist(
                     f"{name}_global_impacts_grouped",
-                    [*hist_axes, axis_impacts_grouped],
+                    [*hist_axes, self.grouped_global_impact_axis],
                     impacts_grouped,
+                    **opts,
+                )
+
+            if gaussian_impacts is not None:
+                self.add_hist(
+                    f"{name}_gaussian_global_impacts",
+                    [*hist_axes, self.global_impact_axis],
+                    gaussian_impacts,
+                    **opts,
+                )
+
+            if gaussian_impacts_grouped is not None:
+                self.add_hist(
+                    f"{name}_gaussian_global_impacts_grouped",
+                    [*hist_axes, self.grouped_global_impact_axis],
+                    gaussian_impacts_grouped,
                     **opts,
                 )
 
@@ -509,12 +630,17 @@ class Workspace:
 
         return name, label
 
-    def add_loss_time_hist(self, loss, time, name="epoch"):
+    def add_1D_integer_hist(self, values, name_x, name_y, **kwargs):
         axis_epoch = hist.axis.Integer(
-            0, len(loss), underflow=False, overflow=False, name="epoch"
+            0, len(values), underflow=False, overflow=False, name=name_x
         )
-        self.add_hist(f"{name}_loss", axis_epoch, loss, label=f"{name} loss")
-        self.add_hist(f"{name}_time", axis_epoch, time, label=f"{name} time")
+        self.add_hist(
+            f"{name_x}_{name_y}",
+            axis_epoch,
+            values,
+            label=f"{name_x} {name_y}",
+            **kwargs,
+        )
 
     def write_meta(self, meta):
         ioutils.pickle_dump_h5py("meta", meta, self.fout)

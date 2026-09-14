@@ -17,6 +17,20 @@ env:
   EOS_DIR: /eos/user/c/cmsmwbot
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
+# One CI run per ref, because runs are not isolated from each other: the
+# runners share a filesystem, so concurrent runs compete for $RABBIT_OUTDIR
+# (and a finishing run's copy-clean deletes it) and for the checkouts under
+# each runner's _work directory.
+#
+# The same lack of isolation is why every job derives PYTHONPATH and PATH from
+# its own $GITHUB_WORKSPACE after checking out, rather than inheriting them
+# from setenv: a workspace path is specific to the runner that produced it, so
+# an inherited one makes every job import rabbit from one runner's tree wherever
+# it happens to run -- and that tree belongs to whichever run checked out last.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
 
   linting:
@@ -26,7 +40,13 @@ jobs:
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
+      # Per job, from its own checkout -- see the note on the concurrency group.
+      - name: setup python path
+        run: |
+          echo "PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH" >> $GITHUB_ENV
+          echo "PATH=$GITHUB_WORKSPACE/bin:$PATH" >> $GITHUB_ENV
 
       - name: run isort
         run: |
@@ -59,11 +79,15 @@ jobs:
       RABBIT_OUTDIR: ${{steps.export.outputs.RABBIT_OUTDIR}}
       WEB_DIR: ${{steps.export.outputs.WEB_DIR}}
       PLOT_DIR: ${{steps.export.outputs.PLOT_DIR}}
-      PYTHONPATH: ${{steps.export.outputs.PYTHONPATH}}
-      PATH: ${{steps.export.outputs.PATH}}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
+      # Per job, from its own checkout -- see the note on the concurrency group.
+      - name: setup python path
+        run: |
+          echo "PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH" >> $GITHUB_ENV
+          echo "PATH=$GITHUB_WORKSPACE/bin:$PATH" >> $GITHUB_ENV
 
       - name: setup kerberos
         run: |
@@ -85,11 +109,6 @@ jobs:
       - name: setup outdir
         run: echo "RABBIT_OUTDIR=/tmp/${USER}/$(uuidgen)" >> $GITHUB_ENV
 
-      - name: setup python path
-        run: |
-          echo "PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH" >> $GITHUB_ENV
-          echo "PATH=$GITHUB_WORKSPACE/bin:$PATH" >> $GITHUB_ENV
-
       - name: setup webdir
         run: echo "WEB_DIR=$RABBIT_OUTDIR/$LOCAL_WEB_DIR" >> $GITHUB_ENV
 
@@ -101,8 +120,6 @@ jobs:
           echo "RABBIT_OUTDIR=$RABBIT_OUTDIR" >> $GITHUB_OUTPUT
           echo "WEB_DIR=$WEB_DIR" >> $GITHUB_OUTPUT
           echo "PLOT_DIR=$PLOT_DIR" >> $GITHUB_OUTPUT
-          echo "PYTHONPATH=$PYTHONPATH" >> $GITHUB_OUTPUT
-          echo "PATH=$PATH" >> $GITHUB_OUTPUT
 
   symmerizations:
     runs-on: [self-hosted, linux, x64]
@@ -111,18 +128,20 @@ jobs:
     steps:
       - env:
           RABBIT_OUTDIR: ${{ needs.setenv.outputs.RABBIT_OUTDIR }}
-          PYTHONPATH: ${{ needs.setenv.outputs.PYTHONPATH }}
-          PATH: ${{ needs.setenv.outputs.PATH }}
           WEB_DIR: ${{ needs.setenv.outputs.WEB_DIR }}
           PLOT_DIR: ${{ needs.setenv.outputs.PLOT_DIR }}
         run: |
           echo "RABBIT_OUTDIR=${RABBIT_OUTDIR}" >> $GITHUB_ENV
-          echo "PYTHONPATH=${PYTHONPATH}" >> $GITHUB_ENV
-          echo "PATH=${PATH}" >> $GITHUB_ENV
           echo "WEB_DIR=${WEB_DIR}" >> $GITHUB_ENV
           echo "PLOT_DIR=${PLOT_DIR}" >> $GITHUB_ENV
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
+      # Per job, from its own checkout -- see the note on the concurrency group.
+      - name: setup python path
+        run: |
+          echo "PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH" >> $GITHUB_ENV
+          echo "PATH=$GITHUB_WORKSPACE/bin:$PATH" >> $GITHUB_ENV
     
       - name: symmetrizations
         run: >- 
@@ -132,6 +151,36 @@ jobs:
         run: >- 
           python tests/symmetrizations.py -o $WEB_DIR/$PLOT_DIR/symmetrizations/ --titlePos 0 --fluctuate
 
+  unit-tests:
+    runs-on: [self-hosted, linux, x64]
+    needs: setenv
+    strategy:
+      fail-fast: false
+      matrix:
+        test:
+          - test_bbstat.py
+          - test_external_term.py
+          - test_global_asym_impacts.py
+          - test_multi_systematic.py
+          - test_sparse_fit.py
+
+    steps:
+      - env:
+          RABBIT_OUTDIR: ${{ needs.setenv.outputs.RABBIT_OUTDIR }}
+        run: |
+          echo "RABBIT_OUTDIR=${RABBIT_OUTDIR}" >> $GITHUB_ENV
+
+      - uses: actions/checkout@v5
+
+      # Per job, from its own checkout -- see the note on the concurrency group.
+      - name: setup python path
+        run: |
+          echo "PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH" >> $GITHUB_ENV
+          echo "PATH=$GITHUB_WORKSPACE/bin:$PATH" >> $GITHUB_ENV
+
+      - name: run ${{ matrix.test }}
+        run: python tests/${{ matrix.test }}
+
   make-tensor:
     runs-on: [self-hosted, linux, x64]
     needs: setenv
@@ -139,18 +188,20 @@ jobs:
     steps:
       - env:
           RABBIT_OUTDIR: ${{ needs.setenv.outputs.RABBIT_OUTDIR }}
-          PYTHONPATH: ${{ needs.setenv.outputs.PYTHONPATH }}
-          PATH: ${{ needs.setenv.outputs.PATH }}
           WEB_DIR: ${{ needs.setenv.outputs.WEB_DIR }}
           PLOT_DIR: ${{ needs.setenv.outputs.PLOT_DIR }}
         run: |
           echo "RABBIT_OUTDIR=${RABBIT_OUTDIR}" >> $GITHUB_ENV
-          echo "PYTHONPATH=${PYTHONPATH}" >> $GITHUB_ENV
-          echo "PATH=${PATH}" >> $GITHUB_ENV
           echo "WEB_DIR=${WEB_DIR}" >> $GITHUB_ENV
           echo "PLOT_DIR=${PLOT_DIR}" >> $GITHUB_ENV
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
+      # Per job, from its own checkout -- see the note on the concurrency group.
+      - name: setup python path
+        run: |
+          echo "PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH" >> $GITHUB_ENV
+          echo "PATH=$GITHUB_WORKSPACE/bin:$PATH" >> $GITHUB_ENV
 
       - name: make tensor
         run: >-
@@ -177,7 +228,7 @@ jobs:
           python tests/make_tensor.py -o $RABBIT_OUTDIR/ --histType boost --postfix boost
 
       - name: debug input
-        run: debug_inputdata.py $RABBIT_OUTDIR//test_tensor.hdf5
+        run: rabbit_debug_inputdata.py $RABBIT_OUTDIR//test_tensor.hdf5
 
       - name: plot input
         run: >-
@@ -191,19 +242,21 @@ jobs:
 
   fitting:
     runs-on: [self-hosted, linux, x64]
-    needs: [setenv, make-tensor]
+    needs: [setenv, unit-tests, make-tensor]
 
     steps:
       - env:
           RABBIT_OUTDIR: ${{ needs.setenv.outputs.RABBIT_OUTDIR }}
-          PYTHONPATH: ${{ needs.setenv.outputs.PYTHONPATH }}
-          PATH: ${{ needs.setenv.outputs.PATH }}
         run: |
           echo "RABBIT_OUTDIR=${RABBIT_OUTDIR}" >> $GITHUB_ENV
-          echo "PYTHONPATH=${PYTHONPATH}" >> $GITHUB_ENV
-          echo "PATH=${PATH}" >> $GITHUB_ENV
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
+      # Per job, from its own checkout -- see the note on the concurrency group.
+      - name: setup python path
+        run: |
+          echo "PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH" >> $GITHUB_ENV
+          echo "PATH=$GITHUB_WORKSPACE/bin:$PATH" >> $GITHUB_ENV
 
       - name: nominal fit
         run: >- 
@@ -236,6 +289,28 @@ jobs:
           rabbit_fit.py $RABBIT_OUTDIR/test_tensor.hdf5 -o $RABBIT_OUTDIR/
           -t 0 --postfix blinded --setConstraintMinimum bkg_2_norm 0.5 --doImpacts --globalImpacts
 
+      - name: pseudodata fit
+        run: >- 
+          rabbit_fit.py $RABBIT_OUTDIR/test_tensor.hdf5 -o $RABBIT_OUTDIR/ --postfix pseudodata
+          -t 0 --pseudoData original --doImpacts --globalImpacts --unblind ^sig$
+
+  sparse-fits:
+    runs-on: [self-hosted, linux, x64]
+    needs: [setenv, unit-tests, make-tensor]
+    steps:
+      - env:
+          RABBIT_OUTDIR: ${{ needs.setenv.outputs.RABBIT_OUTDIR }}
+        run: |
+          echo "RABBIT_OUTDIR=${RABBIT_OUTDIR}" >> $GITHUB_ENV
+
+      - uses: actions/checkout@v5
+
+      # Per job, from its own checkout -- see the note on the concurrency group.
+      - name: setup python path
+        run: |
+          echo "PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH" >> $GITHUB_ENV
+          echo "PATH=$GITHUB_WORKSPACE/bin:$PATH" >> $GITHUB_ENV
+
       - name: sparse tensor fit 
         run: >- 
           rabbit_fit.py $RABBIT_OUTDIR/test_tensor_sparse.hdf5 -o $RABBIT_OUTDIR/ --postfix sparse
@@ -243,55 +318,157 @@ jobs:
           --saveHists --saveHistsPerProcess --computeHistErrors --computeHistErrorsPerProcess
           -m Project ch1 a -m Project ch1 b
 
-      - name: pseudodata fit
-        run: >- 
-          rabbit_fit.py $RABBIT_OUTDIR/test_tensor.hdf5 -o $RABBIT_OUTDIR/ --postfix pseudodata
-          -t 0 --pseudoData original --doImpacts --globalImpacts --unblind ^sig$
-
-      - name: covariance fit
-        run: >- 
-          rabbit_fit.py $RABBIT_OUTDIR/test_tensor.hdf5 -o $RABBIT_OUTDIR/ --postfix covariance
-          -t 0 --unblind --covarianceFit --doImpacts --globalImpacts 
-          --saveHists --saveHistsPerProcess --computeHistErrors --computeHistErrorsPerProcess
-          -m Project ch1 a -m Project ch1 b
-
-      - name: linearized solution
-        run: >- 
-          rabbit_fit.py $RABBIT_OUTDIR/test_tensor_symmetric.hdf5 -o $RABBIT_OUTDIR/ --postfix linearized
-          -t 0 --chisqFit --doImpacts --globalImpacts --binByBinStatType normal-additive --allowNegativePOI
-          --saveHists --saveHistsPerProcess --computeHistErrors --computeHistErrorsPerProcess
-          --computeHistImpacts --computeHistCov -m Project ch1 a -m Project ch1 b 
-
-      - name: chi2 fit with Barlow--Beeston full
-        run: >- 
-          rabbit_fit.py $RABBIT_OUTDIR/test_tensor_symmetric.hdf5 -o $RABBIT_OUTDIR/ --postfix bb_full
-          -t 0 --globalImpacts --binByBinStatType normal-multiplicative --binByBinStatMode full
-
-  bsm:
+  alternative-fits:
     runs-on: [self-hosted, linux, x64]
-    needs: [setenv, make-tensor]
+    needs: [setenv, unit-tests, make-tensor]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:              
+          - name: covariance
+            tensor: test_tensor.hdf5
+            fit_args: >-
+              --covarianceFit
+          - name: linearized
+            tensor: test_tensor_symmetric.hdf5
+            fit_args: >-
+              --binByBinStatType normal-additive --allowNegativeParam
+          - name: bb_full_normal_additive
+            tensor: test_tensor.hdf5
+            fit_args: >-
+              --binByBinStatType normal-additive --binByBinStatMode full
+          - name: bb_full_normal_multiplicative
+            tensor: test_tensor.hdf5
+            fit_args: >-
+              --binByBinStatType normal-multiplicative --binByBinStatMode full
+          - name: bb_full_gamma
+            tensor: test_tensor.hdf5
+            fit_args: >-
+              --binByBinStatType gamma --binByBinStatMode full --globalImpactsDisableJVP
 
     steps:
       - env:
           RABBIT_OUTDIR: ${{ needs.setenv.outputs.RABBIT_OUTDIR }}
-          PYTHONPATH: ${{ needs.setenv.outputs.PYTHONPATH }}
-          PATH: ${{ needs.setenv.outputs.PATH }}
+          WEB_DIR: ${{ needs.setenv.outputs.WEB_DIR }}
+          PLOT_DIR: ${{ needs.setenv.outputs.PLOT_DIR }}
         run: |
           echo "RABBIT_OUTDIR=${RABBIT_OUTDIR}" >> $GITHUB_ENV
-          echo "PYTHONPATH=${PYTHONPATH}" >> $GITHUB_ENV
-          echo "PATH=${PATH}" >> $GITHUB_ENV
+          echo "WEB_DIR=${WEB_DIR}" >> $GITHUB_ENV
+          echo "PLOT_DIR=${PLOT_DIR}" >> $GITHUB_ENV
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
+      # Per job, from its own checkout -- see the note on the concurrency group.
+      - name: setup python path
+        run: |
+          echo "PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH" >> $GITHUB_ENV
+          echo "PATH=$GITHUB_WORKSPACE/bin:$PATH" >> $GITHUB_ENV
+
+      - name: fit ${{ matrix.name }}
+        run: >-
+          rabbit_fit.py $RABBIT_OUTDIR/${{ matrix.tensor }} -o $RABBIT_OUTDIR/ --postfix ${{ matrix.name }}
+          -t -1 0 --doImpacts --globalImpacts --gaussianGlobalImpacts ${{ matrix.fit_args }}
+          -m Project ch1 a -m Project ch1 b --saveHists --saveHistsPerProcess --computeHistErrors 
+          --computeHistErrorsPerProcess --computeHistImpacts --computeHistGaussianImpacts --computeHistCov
+
+      - name: print impacts ${{ matrix.name }}
+        run: rabbit_print_impacts.py $RABBIT_OUTDIR/fitresults_${{ matrix.name }}.hdf5 -u
+
+      - name: print gaussian global impacts ${{ matrix.name }}
+        run: rabbit_print_impacts.py $RABBIT_OUTDIR/fitresults_${{ matrix.name }}.hdf5 --impactType gaussian_global
+
+      - name: print global impacts ${{ matrix.name }}
+        run: rabbit_print_impacts.py $RABBIT_OUTDIR/fitresults_${{ matrix.name }}.hdf5 -s --impactType global
+
+      - name: plot impacts ${{ matrix.name }}
+        run: >-
+          rabbit_plot_pulls_and_impacts.py $RABBIT_OUTDIR/fitresults_${{ matrix.name }}.hdf5 -o $WEB_DIR/$PLOT_DIR/${{ matrix.name }}
+          --otherExtensions pdf png -n 50 --config tests/style_config.py -s absimpact --subtitle "Work in progress"
+          --grouping max --postfix ${{ matrix.name }}
+
+      - name: plot gaussian global impacts ${{ matrix.name }}
+        run: >-
+          rabbit_plot_pulls_and_impacts.py $RABBIT_OUTDIR/fitresults_${{ matrix.name }}.hdf5 -o $WEB_DIR/$PLOT_DIR/${{ matrix.name }}
+          --otherExtensions pdf png -n 50 --config tests/style_config.py -s absimpact --subtitle Preliminary
+          --grouping max --postfix ${{ matrix.name }} --impactType gaussian_global
+          --refResult asimov --refName "asimov" --name "data"
+
+      - name: plot global impacts ${{ matrix.name }}
+        run: >-
+          rabbit_plot_pulls_and_impacts.py $RABBIT_OUTDIR/fitresults_${{ matrix.name }}.hdf5 -o $WEB_DIR/$PLOT_DIR/${{ matrix.name }}
+          --otherExtensions pdf png -n 50 --config tests/style_config.py -s absimpact
+          --grouping max --postfix ${{ matrix.name }} --impactType global --oneSidedImpacts
+
+      - name: plot postfit distributions ${{ matrix.name }}
+        run: >-
+          rabbit_plot_hists.py $RABBIT_OUTDIR/fitresults_${{ matrix.name }}.hdf5 -o $WEB_DIR/$PLOT_DIR/${{ matrix.name }}
+          --extraTextLoc '0.05' '0.7' --legCols 1 -m Project ch1 a -m Project ch1 b --yscale '1.2'
+          --subtitle "Work in progress" --config tests/style_config.py
+
+      - name: plot histogram uncertainties ${{ matrix.name }}
+        run: >-
+          rabbit_plot_hists_uncertainties.py $RABBIT_OUTDIR/fitresults_${{ matrix.name }}.hdf5 -o $WEB_DIR/$PLOT_DIR/${{ matrix.name }}
+          --extraTextLoc '0.05' '0.7' --legCols 1 -m Project ch1 a -m Project ch1 b --yscale '1.2'
+          --subtitle "Work in progress" --config tests/style_config.py
+
+  regularization:
+    runs-on: [self-hosted, linux, x64]
+    needs: [setenv, unit-tests, make-tensor]
+    steps:
+      - env:
+          RABBIT_OUTDIR: ${{ needs.setenv.outputs.RABBIT_OUTDIR }}
+          WEB_DIR: ${{ needs.setenv.outputs.WEB_DIR }}
+          PLOT_DIR: ${{ needs.setenv.outputs.PLOT_DIR }}
+        run: |
+          echo "RABBIT_OUTDIR=${RABBIT_OUTDIR}" >> $GITHUB_ENV
+          echo "WEB_DIR=${WEB_DIR}" >> $GITHUB_ENV
+          echo "PLOT_DIR=${PLOT_DIR}" >> $GITHUB_ENV
+
+      - uses: actions/checkout@v5
+
+      # Per job, from its own checkout -- see the note on the concurrency group.
+      - name: setup python path
+        run: |
+          echo "PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH" >> $GITHUB_ENV
+          echo "PATH=$GITHUB_WORKSPACE/bin:$PATH" >> $GITHUB_ENV
+
+      - name: lcurve scan
+        run: >-
+          rabbit_fit.py $RABBIT_OUTDIR/test_tensor.hdf5 -o $RABBIT_OUTDIR/ --postfix lcurve_scan
+          -t 0 --unblind -r SVD Select 'ch0_masked' -r SVD Select 'ch0_masked' --lCurveScan --earlyStopping 15
+
+      - name: plot lcurve
+        run: >-
+          python tests/plot_epoch_loss_time.py $RABBIT_OUTDIR/fitresults_lcurve_scan.hdf5 -o $WEB_DIR/$PLOT_DIR 
+          --types lcurve --title Experiment --subtitle 'Work in progress'
+
+  bsm:
+    runs-on: [self-hosted, linux, x64]
+    needs: [setenv, unit-tests, make-tensor]
+
+    steps:
+      - env:
+          RABBIT_OUTDIR: ${{ needs.setenv.outputs.RABBIT_OUTDIR }}
+        run: |
+          echo "RABBIT_OUTDIR=${RABBIT_OUTDIR}" >> $GITHUB_ENV
+
+      - uses: actions/checkout@v5
+
+      # Per job, from its own checkout -- see the note on the concurrency group.
+      - name: setup python path
+        run: |
+          echo "PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH" >> $GITHUB_ENV
+          echo "PATH=$GITHUB_WORKSPACE/bin:$PATH" >> $GITHUB_ENV
 
       - name: bsm limits
         run: >-
           rabbit_limit.py $RABBIT_OUTDIR/test_tensor_bsm.hdf5 -o $RABBIT_OUTDIR/ --postfix bsm
-          -t 0 --unblind --expectSignal bsm1 0 --expectSignal bsm2 1 --allowNegativePOI --asymptoticLimits bsm1 --levels 0.05
+          -t 0 --unblind --expectSignal bsm1 0 --expectSignal bsm2 1 --allowNegativeParam --asymptoticLimits bsm1 --levels 0.05
 
       - name: bsm limits on channel 
         run: >-
           rabbit_limit.py $RABBIT_OUTDIR/test_tensor_bsm.hdf5 -o $RABBIT_OUTDIR/ --postfix bsm
-          -t 0 --unblind --poiModel Mixture bsm1 sig --expectSignal bsm1_sig_mixing 0 --asymptoticLimits bsm1_sig_mixing --levels 0.05 --allowNegativePOI
+          -t 0 --unblind --paramModel Mixture bsm1 sig --expectSignal bsm1_sig_mixing 0 --asymptoticLimits bsm1_sig_mixing --levels 0.05 --allowNegativeParam
 
   plotting:
     runs-on: [self-hosted, linux, x64]
@@ -300,18 +477,20 @@ jobs:
     steps:
       - env:
           RABBIT_OUTDIR: ${{ needs.setenv.outputs.RABBIT_OUTDIR }}
-          PYTHONPATH: ${{ needs.setenv.outputs.PYTHONPATH }}
-          PATH: ${{ needs.setenv.outputs.PATH }}
           WEB_DIR: ${{ needs.setenv.outputs.WEB_DIR }}
           PLOT_DIR: ${{ needs.setenv.outputs.PLOT_DIR }}
         run: |
           echo "RABBIT_OUTDIR=${RABBIT_OUTDIR}" >> $GITHUB_ENV
-          echo "PYTHONPATH=${PYTHONPATH}" >> $GITHUB_ENV
-          echo "PATH=${PATH}" >> $GITHUB_ENV
           echo "WEB_DIR=${WEB_DIR}" >> $GITHUB_ENV
           echo "PLOT_DIR=${PLOT_DIR}" >> $GITHUB_ENV
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
+      # Per job, from its own checkout -- see the note on the concurrency group.
+      - name: setup python path
+        run: |
+          echo "PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH" >> $GITHUB_ENV
+          echo "PATH=$GITHUB_WORKSPACE/bin:$PATH" >> $GITHUB_ENV
 
       - name: print pulls & constraints blinded
         run: rabbit_print_pulls_and_constraints.py $RABBIT_OUTDIR/fitresults_blinded.hdf5 
@@ -323,10 +502,10 @@ jobs:
         run: rabbit_print_impacts.py $RABBIT_OUTDIR/fitresults.hdf5 -s
 
       - name: print global impacts
-        run: rabbit_print_impacts.py $RABBIT_OUTDIR/fitresults.hdf5 -s --globalImpacts
+        run: rabbit_print_impacts.py $RABBIT_OUTDIR/fitresults.hdf5 -s --impactType global
 
       - name: print global impacts of observable
-        run: rabbit_print_impacts.py $RABBIT_OUTDIR/fitresults.hdf5 --globalImpacts -m Project ch0_masked --ungroup --sort
+        run: rabbit_print_impacts.py $RABBIT_OUTDIR/fitresults.hdf5 --impactType global -m Project ch0_masked --ungroup --sort
 
       - name: plot impacts
         run: >-
@@ -337,14 +516,14 @@ jobs:
         run: >-
           rabbit_plot_pulls_and_impacts.py $RABBIT_OUTDIR/fitresults.hdf5 -o $WEB_DIR/$PLOT_DIR
           -r $RABBIT_OUTDIR/fitresults_pseudodata.hdf5 --refResult original --refName "Pseudo data" -s absimpact
-          --otherExtensions pdf png -n 50  --config tests/style_config.py --oneSidedImpacts --globalImpacts --diffPullAsym --showNumbers
+          --otherExtensions pdf png -n 50  --config tests/style_config.py --oneSidedImpacts --impactType global --diffPullAsym --showNumbers
           --grouping max --subtitle Preliminary --postfix data_vs_pseudodata
 
       - name: plot global impacts on observable
         run: >-
           rabbit_plot_pulls_and_impacts.py $RABBIT_OUTDIR/fitresults.hdf5 -o $WEB_DIR/$PLOT_DIR
           -s absimpact -m Project ch0_masked
-          --otherExtensions pdf png -n 50  --config tests/style_config.py --oneSidedImpacts --globalImpacts --showNumbers
+          --otherExtensions pdf png -n 50  --config tests/style_config.py --oneSidedImpacts --impactType global --showNumbers
           --grouping max --subtitle Preliminary --postfix ch0_masked
 
       - name: plot prefit distributions
@@ -386,29 +565,31 @@ jobs:
 
       - name: plot histogram covariance matrices
         run: >-
-          rabbit_plot_hists_cov.py $RABBIT_OUTDIR/fitresults.hdf5 -o $WEB_DIR/$PLOT_DIR 
+          rabbit_plot_cov.py $RABBIT_OUTDIR/fitresults.hdf5 -o $WEB_DIR/$PLOT_DIR 
           --subtitle Preliminary -m Project ch1 a -m Project ch1 b --subtitle Preliminary --config tests/style_config.py
 
 
   likelihoodscans:
     runs-on: [self-hosted, linux, x64]
-    needs: [setenv, make-tensor]
+    needs: [setenv, unit-tests, make-tensor]
 
     steps:
       - env:
           RABBIT_OUTDIR: ${{ needs.setenv.outputs.RABBIT_OUTDIR }}
-          PYTHONPATH: ${{ needs.setenv.outputs.PYTHONPATH }}
-          PATH: ${{ needs.setenv.outputs.PATH }}
           WEB_DIR: ${{ needs.setenv.outputs.WEB_DIR }}
           PLOT_DIR: ${{ needs.setenv.outputs.PLOT_DIR }}
         run: |
           echo "RABBIT_OUTDIR=${RABBIT_OUTDIR}" >> $GITHUB_ENV
-          echo "PYTHONPATH=${PYTHONPATH}" >> $GITHUB_ENV
-          echo "PATH=${PATH}" >> $GITHUB_ENV
           echo "WEB_DIR=${WEB_DIR}" >> $GITHUB_ENV
           echo "PLOT_DIR=${PLOT_DIR}" >> $GITHUB_ENV
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
+      # Per job, from its own checkout -- see the note on the concurrency group.
+      - name: setup python path
+        run: |
+          echo "PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH" >> $GITHUB_ENV
+          echo "PATH=$GITHUB_WORKSPACE/bin:$PATH" >> $GITHUB_ENV
 
       - name: nominal fit with scans
         run: >- 
@@ -429,9 +610,85 @@ jobs:
           rabbit_plot_likelihood_scan2D.py $RABBIT_OUTDIR/fitresults_scans.hdf5 -o $WEB_DIR/$PLOT_DIR 
           --title Rabbit --subtitle Preliminary --params sig slope_signal --titlePos 0 --legPos 'lower right'
 
+  make-abcd-tensors:
+    runs-on: [self-hosted, linux, x64]
+    needs: setenv
+
+    steps:
+      - env:
+          RABBIT_OUTDIR: ${{ needs.setenv.outputs.RABBIT_OUTDIR }}
+        run: |
+          echo "RABBIT_OUTDIR=${RABBIT_OUTDIR}" >> $GITHUB_ENV
+
+      - uses: actions/checkout@v5
+
+      # Per job, from its own checkout -- see the note on the concurrency group.
+      - name: setup python path
+        run: |
+          echo "PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH" >> $GITHUB_ENV
+          echo "PATH=$GITHUB_WORKSPACE/bin:$PATH" >> $GITHUB_ENV
+
+      - name: make ABCD tensor
+        run: >-
+          python tests/make_abcd_tensor.py -o $RABBIT_OUTDIR/
+
+      - name: make extended ABCD tensor
+        run: >-
+          python tests/make_extended_abcd_tensor.py -o $RABBIT_OUTDIR/
+
+  abcd-fits:
+    runs-on: [self-hosted, linux, x64]
+    needs: [setenv, unit-tests, make-abcd-tensors]
+
+    steps:
+      - env:
+          RABBIT_OUTDIR: ${{ needs.setenv.outputs.RABBIT_OUTDIR }}
+        run: |
+          echo "RABBIT_OUTDIR=${RABBIT_OUTDIR}" >> $GITHUB_ENV
+
+      - uses: actions/checkout@v5
+
+      # Per job, from its own checkout -- see the note on the concurrency group.
+      - name: setup python path
+        run: |
+          echo "PYTHONPATH=$GITHUB_WORKSPACE:$PYTHONPATH" >> $GITHUB_ENV
+          echo "PATH=$GITHUB_WORKSPACE/bin:$PATH" >> $GITHUB_ENV
+
+      - name: ABCD fit
+        run: >-
+          rabbit_fit.py $RABBIT_OUTDIR/test_abcd_tensor/rabbit_input.hdf5
+          -o $RABBIT_OUTDIR/ --postfix abcd
+          -t 0 --paramModel Mu
+          --paramModel ABCD nonprompt ch_A ch_B ch_C ch_D
+          --saveHists
+
+      - name: SmoothABCD fit
+        run: >-
+          rabbit_fit.py $RABBIT_OUTDIR/test_abcd_tensor/rabbit_input.hdf5
+          -o $RABBIT_OUTDIR/ --postfix smooth_abcd
+          -t 0 --paramModel Mu
+          --paramModel SmoothABCD pt nonprompt ch_A ch_B ch_C ch_D
+          --saveHists
+
+      - name: ExtendedABCD fit
+        run: >-
+          rabbit_fit.py $RABBIT_OUTDIR/test_extended_abcd_tensor/rabbit_input.hdf5
+          -o $RABBIT_OUTDIR/ --postfix extended_abcd
+          -t 0 --paramModel Mu
+          --paramModel ExtendedABCD nonprompt ch_Ax ch_Bx ch_A ch_B ch_C ch_D
+          --saveHists
+
+      - name: SmoothExtendedABCD fit
+        run: >-
+          rabbit_fit.py $RABBIT_OUTDIR/test_extended_abcd_tensor/rabbit_input.hdf5
+          -o $RABBIT_OUTDIR/ --postfix smooth_extended_abcd
+          -t 0 --paramModel Mu
+          --paramModel SmoothExtendedABCD pt nonprompt ch_Ax ch_Bx ch_A ch_B ch_C ch_D
+          --saveHists
+
   copy-clean:
     runs-on: [self-hosted, linux, x64]
-    needs: [setenv, symmerizations, bsm, plotting, likelihoodscans]
+    needs: [setenv, symmerizations, sparse-fits, alternative-fits, regularization, bsm, plotting, likelihoodscans, abcd-fits]
     if: always() 
     steps:
       - env:

@@ -13,7 +13,7 @@ from scipy.stats import norm
 
 from rabbit import asymptotic_limits, fitter, inputdata, parsing, workspace
 from rabbit.mappings import helpers as mh
-from rabbit.poi_models import helpers as ph
+from rabbit.param_models import helpers as ph
 from rabbit.tfhelpers import edmval_cov
 
 from wums import output_tools, logging  # isort: skip
@@ -47,7 +47,7 @@ def make_parser():
         help="Confidence level for asymptotic upper limit, multiple are possible",
     )
 
-    return parser.parse_args()
+    return parser
 
 
 def do_asymptotic_limits(args, fitter, ws, data_values, mapping=None, fit_data=False):
@@ -136,14 +136,16 @@ def do_asymptotic_limits(args, fitter, ws, data_values, mapping=None, fit_data=F
             fun = None
 
             idx = np.where(fitter.parms.astype(str) == key)[0][0]
-            if key in fitter.poi_model.pois.astype(str):
+            if key in fitter.param_model.params[: fitter.param_model.npoi].astype(str):
                 is_poi = True
                 xbest = fitter_asimov.get_poi()[idx]
                 xobs = fitter.get_poi()[idx]
             elif key in fitter.parms.astype(str):
                 is_poi = False
-                xbest = fitter_asimov.get_theta()[idx - fitter_asimov.poi_model.npoi]
-                xobs = fitter.get_theta()[idx - fitter.poi_model.npoi]
+                xbest = fitter_asimov.get_theta()[
+                    idx - fitter_asimov.param_model.nparams
+                ]
+                xobs = fitter.get_theta()[idx - fitter.param_model.nparams]
 
             xerr = fitter_asimov.cov[idx, idx] ** 0.5
 
@@ -156,7 +158,7 @@ def do_asymptotic_limits(args, fitter, ws, data_values, mapping=None, fit_data=F
             fitter.cov.assign(cov)
             xobs_err = fitter.cov[idx, idx] ** 0.5
 
-            if is_poi and not args.allowNegativePOI:
+            if is_poi and not args.allowNegativeParam:
                 xerr = 2 * xerr * xbest**0.5
                 xobs_err = 2 * xobs_err * xobs**0.5
 
@@ -190,7 +192,7 @@ def do_asymptotic_limits(args, fitter, ws, data_values, mapping=None, fit_data=F
                     logger.info(
                         f"Expected (Likelihood) {round((cl_b)*100,1):4.1f}%: {key} < {r}"
                     )
-                    limits_nll[i, j, k] = r
+                    limits_nll[i, j, k] = r.item()
 
             if "gaussian" in args.modes:
                 # Gaussian approximation
@@ -246,7 +248,7 @@ def do_asymptotic_limits(args, fitter, ws, data_values, mapping=None, fit_data=F
 
 def main():
     start_time = time.time()
-    args = make_parser()
+    args = make_parser().parse_args()
 
     if args.eager:
         tf.config.run_functions_eagerly(True)
@@ -262,10 +264,10 @@ def main():
 
     indata = inputdata.FitInputData(args.filename, args.pseudoData)
 
-    margs = args.poiModel
-    poi_model = ph.load_model(margs[0], indata, *margs[1:], **vars(args))
+    model_specs = args.paramModel or [["Mu"]]
+    param_model = ph.load_models(model_specs, indata, **vars(args))
 
-    ifitter = fitter.Fitter(indata, poi_model, args, do_blinding=any(blinded_fits))
+    ifitter = fitter.Fitter(indata, param_model, args, do_blinding=any(blinded_fits))
 
     # mapping for observables and parameters
     if len(args.mapping) > 0:
@@ -282,12 +284,12 @@ def main():
         "meta_info": output_tools.make_meta_info_dict(args=args),
         "meta_info_input": ifitter.indata.metadata,
         "procs": ifitter.indata.procs,
-        "pois": ifitter.poi_model.pois,
-        "nois": ifitter.parms[ifitter.poi_model.npoi :][indata.noiidxs],
+        "pois": ifitter.param_model.params[: ifitter.param_model.npoi],
+        "nois": ifitter.parms[ifitter.param_model.nparams :][indata.noiidxs],
     }
 
     with workspace.Workspace(
-        args.output,
+        args.outpath,
         args.outname,
         postfix=args.postfix,
         fitter=ifitter,

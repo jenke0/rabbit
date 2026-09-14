@@ -1,70 +1,22 @@
 #!/usr/bin/env python3
 
-import argparse
 import os
 
+import hist
 import matplotlib.pyplot as plt
 import mplhep as hep
 import numpy as np
 from scipy.stats import chi2
 
-from rabbit import io_tools
+from rabbit import io_tools, parsing
 
 from wums import output_tools, plot_tools  # isort: skip
-
 
 hep.style.use(hep.style.ROOT)
 
 
-def writeOutput(fig, outfile, extensions=[], postfix=None, args=None, meta_info=None):
-    name, _ = os.path.splitext(outfile)
-
-    if postfix:
-        name += f"_{postfix}"
-
-    for ext in extensions:
-        if ext[0] != ".":
-            ext = "." + ext
-        output = name + ext
-        print(f"Write output file {output}")
-        plt.savefig(output)
-
-        output = name.rsplit("/", 1)
-        output[1] = os.path.splitext(output[1])[0]
-        if len(output) == 1:
-            output = (None, *output)
-    if args is None and meta_info is None:
-        return
-    output_tools.write_logfile(
-        *output,
-        args=args,
-        meta_info=meta_info,
-    )
-
-
-def parseArgs():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "inputFile",
-        type=str,
-        help="fitresults output",
-    )
-    parser.add_argument(
-        "--result",
-        default=None,
-        type=str,
-        help="fitresults key in file (e.g. 'asimov'). Leave empty for data fit result.",
-    )
-    parser.add_argument(
-        "-o",
-        "--outpath",
-        type=str,
-        default="./test",
-        help="Folder path for output",
-    )
-    parser.add_argument(
-        "-p", "--postfix", type=str, help="Postfix for output file name"
-    )
+def make_parser():
+    parser = parsing.plot_parser()
     parser.add_argument(
         "--params",
         type=str,
@@ -73,18 +25,13 @@ def parseArgs():
         help="Parameters to plot the likelihood scan",
     )
     parser.add_argument(
-        "--title",
-        default="Rabbit",
-        type=str,
-        help="Title to be printed in upper left",
+        "--scales",
+        type=float,
+        nargs=2,
+        action="append",
+        default=[],
+        help="Scaling factors for parameter values",
     )
-    parser.add_argument(
-        "--subtitle",
-        default="",
-        type=str,
-        help="Subtitle to be printed after title",
-    )
-    parser.add_argument("--titlePos", type=int, default=2, help="title position")
     parser.add_argument(
         "--legPos", type=str, default="upper right", help="Set legend position"
     )
@@ -105,12 +52,6 @@ def parseArgs():
         type=str,
         default=None,
         help="y axis label",
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        default=None,
-        help="Path to config file for style formatting",
     )
     parser.add_argument(
         "--noHessian",
@@ -137,7 +78,33 @@ def parseArgs():
         action="store_true",
         help="Plot spiral scan illustration",
     )
-    return parser.parse_args()
+    return parser
+
+
+def writeOutput(fig, outfile, extensions=[], postfix=None, args=None, meta_info=None):
+    name, _ = os.path.splitext(outfile)
+
+    if postfix:
+        name += f"_{postfix}"
+
+    for ext in extensions:
+        if ext[0] != ".":
+            ext = "." + ext
+        output = name + ext
+        print(f"Write output file {output}")
+        plt.savefig(output)
+
+        output = name.rsplit("/", 1)
+        output[1] = os.path.splitext(output[1])[0]
+        if len(output) == 1:
+            output = (None, *output)
+    if args is None and meta_info is None:
+        return
+    output_tools.write_logfile(
+        *output,
+        args=args,
+        meta_info=meta_info,
+    )
 
 
 def ellipse(cov, mu0, mu1, cl, cartesian_angle=False):
@@ -346,8 +313,18 @@ def plot_scan(
 
 
 def main():
-    args = parseArgs()
-    fitresult, meta = io_tools.get_fitresult(args.inputFile, args.result, meta=True)
+    args = make_parser().parse_args()
+
+    if len(args.scales) > len(args.params):
+        raise Exception("""
+        option "--scales" has more pairs than "--params". It can only have as many or less.
+        If less, pairs of 1.0 will be automatically patched.
+        """)
+    elif len(args.scales) < len(args.params):
+        for i in range(len(args.params) - len(args.scales)):
+            args.scales.append([1.0, 1.0])
+
+    fitresult, meta = io_tools.get_fitresult(args.infile, args.result, meta=True)
     config = plot_tools.load_config(args.config)
 
     meta = {
@@ -364,13 +341,22 @@ def main():
     if "contour_scans2D" in fitresult.keys():
         h_contour = fitresult["contour_scans2D"].get()
 
-    for px, py in args.params:
-        px_value = h_params[{"parms": px}].value
-        py_value = h_params[{"parms": py}].value
+    for ip, (px, py) in enumerate(args.params):
+        px_scale, py_scale = args.scales[ip]
+        px_value = px_scale * h_params[{"parms": px}].value
+        py_value = py_scale * h_params[{"parms": py}].value
 
         cov = None
         if h_cov is not None and not args.noHessian:
-            cov = h_cov[{"parms_x": [px, py], "parms_y": [px, py]}].values()
+            # given the scalings w1 and w2, compute
+            # [ [c11 * w1 * w1, c12 * w1 * w2],
+            #   [c21 * w1 * w2, c22 * w2 * w2],
+            # ]
+            w = np.array([px_scale, py_scale])
+            cov = (
+                np.outer(w, w)
+                * h_cov[{"parms_x": [px, py], "parms_y": [px, py]}].values()
+            )
 
         h_contour_params = None
         if (
@@ -382,7 +368,16 @@ def main():
 
         h_scan = None
         if f"nll_scan2D_{px}_{py}" in fitresult.keys() and not args.noScan:
-            h_scan = fitresult[f"nll_scan2D_{px}_{py}"].get()
+            h_scan_in = fitresult[f"nll_scan2D_{px}_{py}"].get()
+            # scale categorical axis value
+            cats0 = [str(float(x) * px_scale) for x in h_scan_in.axes[0]]
+            cats1 = [str(float(x) * py_scale) for x in h_scan_in.axes[1]]
+            h_scan = hist.Hist(
+                hist.axis.StrCategory(cats0, name=h_scan_in.axes[0].name),
+                hist.axis.StrCategory(cats1, name=h_scan_in.axes[1].name),
+                storage=h_scan_in.storage_type(),
+            )
+            h_scan.view(flow=True)[...] = h_scan_in.view(flow=True)
 
         fig = plot_scan(
             args,

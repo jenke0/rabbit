@@ -46,12 +46,16 @@ def read_impacts_poi(
 ):
     # read impacts of a single POI
 
-    if asym and impact_type == "traditional":
+    if asym and impact_type == "traditional" and "impacts_asym" not in fitresult.keys():
+        # Fallback: read asymmetric traditional impacts from a generic
+        # contour scan output if --asymImpacts wasn't run.
         h_impacts = fitresult["contour_scans"].get()[{"confidence_level": "1.0"}]
     else:
         impact_name = "impacts"
         if impact_type != "traditional":
             impact_name = f"{impact_type}_{impact_name}"
+        if asym:
+            impact_name += "_asym"
         if grouped:
             impact_name += "_grouped"
 
@@ -76,6 +80,7 @@ def read_impacts_poi(
         pulls_labels, pulls_prefit, constraints_prefit = get_pulls_and_constraints(
             fitresult, asym=asym and impact_type == "traditional", prefit=True
         )
+
         if len(pulls_labels) != len(labels):
             mask = [l in labels for l in pulls_labels]
             pulls = pulls[mask]

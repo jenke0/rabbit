@@ -1,5 +1,21 @@
 #!/usr/bin/env python3
 
+# Enable XLA's multi-threaded Eigen path on CPU before importing tensorflow.
+# This must be set before any TF import (including transitive) because XLA
+# parses XLA_FLAGS once during runtime initialization. Measured ~1.3x speedup
+# on dense large-model HVP/loss+grad on a many-core system, no downside.
+# Users who set their own XLA_FLAGS keep theirs and we append.
+import os as _os
+
+_xla_default = "--xla_cpu_multi_thread_eigen=true"
+_existing = _os.environ.get("XLA_FLAGS", "")
+if "xla_cpu_multi_thread_eigen" not in _existing:
+    _os.environ["XLA_FLAGS"] = (
+        f"{_existing} {_xla_default}".strip() if _existing else _xla_default
+    )
+
+import copy
+
 import tensorflow as tf
 
 tf.config.experimental.enable_op_determinism()
@@ -12,7 +28,10 @@ from scipy.stats import chi2
 from rabbit import fitter, inputdata, parsing, workspace
 from rabbit.mappings import helpers as mh
 from rabbit.mappings import mapping as mp
-from rabbit.poi_models import helpers as ph
+from rabbit.param_models import helpers as ph
+from rabbit.param_models import param_model
+from rabbit.regularization import helpers as rh
+from rabbit.regularization.lcurve import l_curve_optimize_tau, l_curve_scan_tau
 from rabbit.tfhelpers import edmval_cov
 
 from wums import output_tools, logging  # isort: skip
@@ -126,10 +145,23 @@ def make_parser():
         help="propagate global impacts on histogram bins (inclusive in processes)",
     )
     parser.add_argument(
+        "--computeHistGaussianImpacts",
+        default=False,
+        action="store_true",
+        help="propagate gaussian global impacts on histogram bins (inclusive in processes)",
+    )
+    parser.add_argument(
         "--computeVariations",
         default=False,
         action="store_true",
         help="save postfit histograms with each noi varied up to down",
+    )
+    parser.add_argument(
+        "--computeSaturatedProjectionTests",
+        default=False,
+        action="store_true",
+        help="Compute the saturated likelihood test for mappings that are a selection "
+        "and a summation of input bins, e.g. 'Select' and 'Project' mappings",
     )
     parser.add_argument(
         "--noChi2",
@@ -150,6 +182,12 @@ def make_parser():
         help="Specify result from external postfit file",
     )
     parser.add_argument(
+        "--noFit",
+        default=False,
+        action="store_true",
+        help="Do not not perform the minimization.",
+    )
+    parser.add_argument(
         "--noPostfitProfileBB",
         default=False,
         action="store_true",
@@ -165,7 +203,13 @@ def make_parser():
         "--globalImpacts",
         default=False,
         action="store_true",
-        help="compute impacts in terms of variations of global observables (as opposed to nuisance parameters directly)",
+        help="compute impacts in terms of variations from the likelihood of global observables (as opposed to nuisance parameters directly)",
+    )
+    parser.add_argument(
+        "--gaussianGlobalImpacts",
+        default=False,
+        action="store_true",
+        help="compute impacts in terms of variations of global observables in the fully gaussian approximation (as opposed to nuisance parameters directly)",
     )
     parser.add_argument(
         "--globalImpactsDisableJVP",
@@ -182,8 +226,111 @@ def make_parser():
         action="store_true",
         help="compute impacts of frozen (non-profiled) systematics",
     )
+    parser.add_argument(
+        "--asymImpacts",
+        default=False,
+        action="store_true",
+        help="Compute traditional asymmetric impacts on POIs by running a "
+        "Delta(2NLL)=1 contour scan per nuisance. All nuisances are scanned "
+        "by default; restrict with --asymImpactsInclude/--asymImpactsExclude.",
+    )
+    parser.add_argument(
+        "--asymImpactsInclude",
+        default=None,
+        nargs="+",
+        help="Regex(es) restricting which nuisances are scanned for --asymImpacts.",
+    )
+    parser.add_argument(
+        "--asymImpactsExclude",
+        default=None,
+        nargs="+",
+        help="Regex(es) excluding nuisances from --asymImpacts.",
+    )
+    parser.add_argument(
+        "--asymImpactsHess",
+        default="exact",
+        choices=fitter.CONTOUR_HESS_MODES,
+        help="Constraint-Hessian mode for the contour-scan in --asymImpacts. "
+        "'exact' rebuilds the full N x N NLL Hessian each iteration (slow, "
+        "reference). 'hvp' uses Hessian-vector products via a LinearOperator "
+        "(exact, typically fastest for large N). 'frozen' uses cov^-1 from "
+        "the postfit as a constant Hessian (cheapest but produces silent "
+        "failures on non-Gaussian profiles -- speed reference only). "
+        "'bfgs'/'sr1' use a quasi-Newton estimate built up from the gradient "
+        "sequence (no extra TF calls per iteration; may need more iterations).",
+    )
+    parser.add_argument(
+        "--asymImpactsTol",
+        default=1e-6,
+        type=float,
+        help="trust-constr xtol/gtol for the --asymImpacts contour-scan. "
+        "Looser values (e.g. 1e-3) terminate before the iterate is on the "
+        "Delta(2NLL)=q contour, producing silent constraint violations. "
+        "Tighter values (1e-5, 1e-6) are slower with no benefit unless your "
+        "fit has nuisances whose profile is far from quadratic.",
+    )
+    parser.add_argument(
+        "--globalAsymImpacts",
+        default=False,
+        action="store_true",
+        help="Compute fully likelihood-based asymmetric global impacts on POIs "
+        "by shifting each constrained nuisance's theta0 by +/- 1 prefit sigma "
+        "and re-running the fit. In the Gaussian limit this reproduces "
+        "--gaussianGlobalImpacts; deviations measure non-Gaussianity of the "
+        "joint profile. Cost is N_selected x 2 full minimizations -- gate with "
+        "--globalAsymImpactsInclude in practice.",
+    )
+    parser.add_argument(
+        "--globalAsymImpactsInclude",
+        default=None,
+        nargs="+",
+        help="Regex(es) restricting which nuisances are scanned for "
+        "--globalAsymImpacts.",
+    )
+    parser.add_argument(
+        "--globalAsymImpactsExclude",
+        default=None,
+        nargs="+",
+        help="Regex(es) excluding nuisances from --globalAsymImpacts.",
+    )
+    parser.add_argument(
+        "--globalAsymImpactsSigma",
+        default=1.0,
+        type=float,
+        help="theta0 shift magnitude for --globalAsymImpacts, in units of the "
+        "prefit constraint width (1.0 = 1 prefit sigma).",
+    )
+    parser.add_argument(
+        "--globalAsymImpactsLinearWarmstart",
+        default=False,
+        action="store_true",
+        help="EXPERIMENTAL: warm-start each --globalAsymImpacts refit at the "
+        "Gaussian-approximation new minimum x_nom + dxdx0[:, source] * shift "
+        "(same Jacobian as --gaussianGlobalImpacts). On near-Gaussian "
+        "sources this should reduce per-source refit cost by 10-50x. "
+        "Adds one --gaussianGlobalImpacts-equivalent precompute up front. "
+        "Off by default until validated on real tensors.",
+    )
+    parser.add_argument(
+        "--lCurveScan",
+        default=False,
+        action="store_true",
+        help="For use with regularization, scan the L curve versus values for tau",
+    )
+    parser.add_argument(
+        "--lCurveOptimize",
+        default=False,
+        action="store_true",
+        help="For use with regularization, find the value of tau that maximizes the curvature",
+    )
+    parser.add_argument(
+        "--regularizationStrength",
+        default=0.0,
+        type=float,
+        help="For use with regularization, set the regularization strength (tau)",
+    )
 
-    return parser.parse_args()
+    return parser
 
 
 def save_observed_hists(args, mappings, fitter, ws):
@@ -196,8 +343,10 @@ def save_observed_hists(args, mappings, fitter, ws):
             mapping,
             fitter.indata.data_obs,
             fitter.nobs.value(),
+            fitter.indata.data_var,
+            fitter.varnobs.value() if fitter.varnobs is not None else None,
             fitter.indata.data_cov_inv,
-            fitter.data_cov_inv,
+            fitter.data_cov_inv.numpy() if fitter.data_cov_inv is not None else None,
         )
 
 
@@ -217,6 +366,7 @@ def save_hists(args, mappings, fitter, ws, prefit=True, profile=False):
                 compute_cov=args.computeHistCov,
                 compute_chi2=not args.noChi2 and mapping.has_data,
                 compute_global_impacts=args.computeHistImpacts,
+                compute_gaussian_global_impacts=args.computeHistGaussianImpacts,
                 profile=profile,
             )
 
@@ -227,11 +377,136 @@ def save_hists(args, mappings, fitter, ws, prefit=True, profile=False):
                 cov=aux[1],
                 impacts=aux[2],
                 impacts_grouped=aux[3],
+                gaussian_impacts=aux[4],
+                gaussian_impacts_grouped=aux[5],
                 prefit=prefit,
             )
 
-            if aux[4] is not None:
-                ws.add_chi2(aux[4], aux[5], prefit, mapping)
+            if aux[-2] is not None:
+                chi2val = float(aux[-2])
+                ndf = int(aux[-1])
+                p_val = chi2.sf(chi2val, ndf)
+
+                logger.info("Linear chi2:")
+                logger.info(f"    ndof: {ndf}")
+                logger.info(f"    chi2/ndf = {round(chi2val)}")
+                logger.info(rf"    p-value: {round(p_val * 100, 2)}%")
+
+                ws.add_chi2(chi2val, ndf, prefit, mapping)
+
+            # the saturated model is only defined for mappings that are a selection and a
+            #   summation of input bins, and needs data to compare the prediction against
+            saturated_indices = (
+                mapping.output_indices()
+                if args.computeSaturatedProjectionTests
+                and not prefit
+                and mapping.has_data
+                else None
+            )
+
+            if saturated_indices is not None:
+                # saturated likelihood test
+
+                saturated_model = param_model.SaturatedProjectModel(
+                    fitter.indata, mapping.channel_info, saturated_indices
+                )
+                composite_model = param_model.CompositeParamModel(
+                    [fitter.param_model, saturated_model]
+                )
+
+                fitter_saturated = copy.deepcopy(fitter)
+
+                # preserve the (possibly toy-randomized) constraint centers
+                # across the re-init: the theta block maps 1:1, and the
+                # original model's prior centers land at [0:npoi] and
+                # [composite.npoi : composite.npoi+npou] in the composite
+                # [POIs | POUs] layout; the saturated model's own params keep
+                # the freshly initialized centers
+                orig_model = fitter_saturated.param_model
+                toy_x0 = tf.identity(fitter_saturated.x0.value())
+                saved_regularizers = fitter_saturated.regularizers
+                saved_tau = float(fitter_saturated.tau.numpy())
+                fitter_saturated.init_fit_parms(
+                    composite_model,
+                    args.setConstraintMinimum,
+                    unblind=args.unblind,
+                    blinding_group=args.blindingGroup,
+                    freeze_parameters=args.freezeParameters,
+                )
+                fitter_saturated.x0[composite_model.nparams :].assign(
+                    toy_x0[orig_model.nparams :]
+                )
+                if orig_model.npoi > 0:
+                    fitter_saturated.x0[: orig_model.npoi].assign(
+                        toy_x0[: orig_model.npoi]
+                    )
+                if orig_model.npou > 0:
+                    fitter_saturated.x0[
+                        composite_model.npoi : composite_model.npoi + orig_model.npou
+                    ].assign(toy_x0[orig_model.npoi : orig_model.nparams])
+                fitter_saturated.regularizers = saved_regularizers
+                fitter_saturated.tau.assign(saved_tau)
+
+                fitter_saturated.xdefaultassign()
+                # The composite re-init reordered and resized the parameter
+                # vector (one POI per projected bin, inserted ahead of the
+                # original model's block), so regularizers must be re-armed or
+                # they read the wrong entries. xdefaultassign() above is
+                # deliberate but does not arm them.
+                fitter_saturated.arm_regularizers()
+                cb = fitter_saturated.minimize()
+                cov_saturated = None
+                edmval = None
+                if not args.noHessian:
+                    _, grad, hess = fitter_saturated.loss_val_grad_hess()
+                    try:
+                        edmval, cov_saturated = fitter_saturated.edmval_cov(grad, hess)
+                        logger.info(f"edmval: {edmval}")
+                    except (ValueError, np.linalg.LinAlgError) as e:
+                        # the saturated parameters can be degenerate with parameters of the
+                        #   original model, e.g. if a parameter only affects bins that are
+                        #   made free by the saturated model. The test statistic itself does
+                        #   not need the hessian and stays valid.
+                        logger.warning(
+                            f"Could not compute the covariance of the saturated fit for '{mapping.key}': {e}"
+                        )
+
+                nllvalreduced = fitter_saturated.reduced_nll().numpy()
+
+                ndf = saturated_model.npoi
+                chi2val = 2.0 * (ws.results["nllvalreduced"] - nllvalreduced)
+                p_val = chi2.sf(chi2val, ndf)
+
+                logger.info("Saturated chi2:")
+                logger.info(f"    ndof: {ndf}")
+                logger.info(f"    2*deltaNLL: {round(chi2val, 2)}")
+                logger.info(rf"    p-value: {round(p_val * 100, 2)}%")
+
+                ws.add_chi2(
+                    chi2val, ndf, prefit, mapping, saturated=True, edmval=edmval
+                )
+
+                # Persist the saturated fit itself, not just its chi2, under
+                # results["mappings"][<mapping>]["saturated_fit"], using the same
+                # key names the primary fit uses at top level.
+                SAT = dict(mapping_key=mapping.key, group="saturated_fit")
+                ws.add_value(float(nllvalreduced), "nllvalreduced", **SAT)
+                ws.add_named_parms_hist(
+                    fitter_saturated.x.numpy(),
+                    fitter_saturated.parms,
+                    variances=(
+                        np.diag(cov_saturated) if cov_saturated is not None else None
+                    ),
+                    **SAT,
+                )
+                ws.add_minimizer_status(fitter_saturated.minimizer_status(), **SAT)
+                if edmval is not None:
+                    ws.add_value(float(edmval), "edmval", **SAT)
+                if cov_saturated is not None:
+                    ws.add_named_cov_hist(cov_saturated, fitter_saturated.parms, **SAT)
+                if cb is not None and getattr(cb, "loss_history", None) is not None:
+                    ws.add_1D_integer_hist(cb.loss_history, "epoch", "loss", **SAT)
+                    ws.add_1D_integer_hist(cb.time_history, "epoch", "time", **SAT)
 
         if args.saveHistsPerProcess and not mapping.skip_per_process:
             logger.info(f"Save processes histogram for {mapping.key}")
@@ -252,9 +527,16 @@ def save_hists(args, mappings, fitter, ws, prefit=True, profile=False):
             )
 
         if args.computeVariations:
+            if fitter.cov is None:
+                raise RuntimeError(
+                    "--computeVariations requires the parameter covariance "
+                    "matrix and so is incompatible with --noHessian."
+                )
             if prefit:
                 cov_prefit = fitter.cov.numpy()
-                fitter.cov.assign(fitter.prefit_covariance(unconstrained_err=1.0))
+                fitter.cov.assign(
+                    fitter.prefit_covariance(unconstrained_err=1.0).to_dense()
+                )
 
             exp, aux = fitter.expected_events(
                 mapping,
@@ -281,52 +563,149 @@ def fit(args, fitter, ws, dofit=True):
     edmval = None
 
     if args.externalPostfit is not None:
-        fitter.load_fitresult(args.externalPostfit, args.externalPostfitResult)
+        fitter.load_fitresult(
+            args.externalPostfit,
+            args.externalPostfitResult,
+            profile=not args.noPostfitProfileBB,
+        )
+
+    if args.lCurveScan:
+        tau_values, l_curve_values = l_curve_scan_tau(fitter)
+        ws.add_1D_integer_hist(tau_values, "step", "tau")
+        ws.add_1D_integer_hist(l_curve_values, "step", "lcurve")
+
+    if args.lCurveOptimize:
+        best_tau, max_curvature = l_curve_optimize_tau(fitter)
+        ws.add_1D_integer_hist([best_tau], "best", "tau")
+        ws.add_1D_integer_hist([max_curvature], "best", "lcurve")
 
     if dofit:
+        _t_min = time.perf_counter()
         cb = fitter.minimize()
+        logger.debug(
+            f"[timing] fitter.minimize(): {time.perf_counter() - _t_min:.1f} s"
+        )
 
         # force profiling of beta with final parameter values
         # TODO avoid the extra calculation and jitting if possible since the relevant calculation
         # usually would have been done during the minimization
-        if fitter.binByBinStat and not args.noPostfitProfileBB:
+        if fitter.bbstat.enabled and not args.noPostfitProfileBB:
+            _t_bb = time.perf_counter()
+            logger.info(f"profile beta")
             fitter._profile_beta()
+            logger.debug(
+                f"[timing] _profile_beta(): {time.perf_counter() - _t_bb:.1f} s"
+            )
 
         if cb is not None:
-            ws.add_loss_time_hist(cb.loss_history, cb.time_history)
+            ws.add_1D_integer_hist(cb.loss_history, "epoch", "loss")
+            ws.add_1D_integer_hist(cb.time_history, "epoch", "time")
+            logger.debug(
+                f"[timing] minimizer: {len(cb.loss_history)} iterations recorded"
+            )
 
-    if not args.noHessian:
-        # compute the covariance matrix and estimated distance to minimum
+    # default for add_parms_hist below: NaN variances so the parms hist is
+    # always written with Weight storage, and entries whose uncertainty was
+    # not computed (e.g. --noHessian with --noEDM) read NaN downstream
+    # instead of a silently absent or plausible-looking value.
+    parms_variances = np.full(len(fitter.parms), np.nan)
 
-        val, grad, hess = fitter.loss_val_grad_hess()
-        edmval, cov = edmval_cov(grad, hess)
-        logger.info(f"edmval: {edmval}")
+    # take covariance from externalPostfit in case the fit was skipped.
+    # If the external fitresult does not contain a covariance (e.g. it was
+    # produced with --noHessian), recompute the Hessian at the loaded postfit
+    # point instead — the two-pass recipe: fit once with --noHessian, then
+    # rerun with --externalPostfit ... --noFit (without --noHessian) to get
+    # the covariance.
+    if (
+        dofit
+        or args.externalPostfit is None
+        or not getattr(fitter, "external_cov_loaded", False)
+    ):
+        if not args.noEDM and not args.noHessian:
+            # compute the covariance matrix and estimated distance to minimum
+            _, grad, hess = fitter.loss_val_grad_hess()
+            edmval, cov = fitter.edmval_cov(grad, hess)
+            logger.info(f"edmval: {edmval}")
 
-        fitter.cov.assign(cov)
+            ws.add_cov_hist(cov)
 
-        del cov
+            fitter.cov.assign(cov)
+            del cov
 
-        if fitter.binByBinStat and fitter.diagnostics:
-            # This is the estimated distance to minimum with respect to variations of
-            # the implicit binByBinStat nuisances beta at fixed parameter values.
-            # It should be near-zero by construction as long as the analytic profiling is
-            # correct
-            _, gradbeta, hessbeta = fitter.loss_val_grad_hess_beta()
-            edmvalbeta, covbeta = edmval_cov(gradbeta, hessbeta)
-            logger.info(f"edmvalbeta: {edmvalbeta}")
+            if fitter.bbstat.enabled and fitter.diagnostics:
+                # This is the estimated distance to minimum with respect to variations of
+                # the implicit binByBinStat nuisances beta at fixed parameter values.
+                # It should be near-zero by construction as long as the analytic profiling is
+                # correct
+                _, gradbeta, hessbeta = fitter.loss_val_grad_hess_beta()
+                edmvalbeta = edmval_cov(gradbeta, hessbeta)
+                logger.info(f"edmvalbeta: {edmvalbeta}")
 
-        if args.doImpacts:
-            ws.add_impacts_hists(*fitter.impacts_parms(hess))
+            if args.doImpacts:
+                ws.add_impacts_hists(*fitter.impacts_parms(hess))
 
-        del hess
+            del hess
 
-        if args.globalImpacts:
-            ws.add_global_impacts_hists(*fitter.global_impacts_parms())
+            if args.globalImpacts:
+                ws.add_impacts_hists(
+                    *fitter.global_impacts_parms(),
+                    base_name="global_impacts",
+                    global_impacts=True,
+                )
+
+            if args.gaussianGlobalImpacts:
+                ws.add_impacts_hists(
+                    *fitter.gaussian_global_impacts_parms(),
+                    base_name="gaussian_global_impacts",
+                    global_impacts=True,
+                )
+
+            parms_variances = tf.linalg.diag_part(fitter.cov)
+        elif not args.noEDM:
+            # --noHessian: avoid the full dense Hessian. Still compute edmval
+            # and the POI+NOI uncertainties via a Hessian-free conjugate
+            # gradient solve of H @ v = grad and H @ c_i = e_i, using only
+            # Hessian-vector products. The CG solves touch O(npar) memory
+            # per call instead of O(npar^2), so this works on problems
+            # where the full covariance would be infeasible.
+            _t_lg = time.perf_counter()
+            _, grad = fitter.loss_val_grad()
+            logger.debug(
+                f"[timing] loss_val_grad() (postfit): {time.perf_counter() - _t_lg:.1f} s"
+            )
+
+            npoi = int(fitter.param_model.npoi)
+            noi_idx_in_x = np.asarray(fitter.indata.noiidxs, dtype=np.int64) + npoi
+            poi_noi_idx = np.concatenate(
+                [np.arange(npoi, dtype=np.int64), noi_idx_in_x]
+            )
+            logger.debug(
+                f"[timing] EDM CG: solving for {len(poi_noi_idx)} POI+NOI rows"
+            )
+
+            _t_edm = time.perf_counter()
+            edmval, cov_rows = fitter.edmval_cov_rows_hessfree(grad, poi_noi_idx)
+            logger.debug(
+                f"[timing] edmval_cov_rows_hessfree(): {time.perf_counter() - _t_edm:.1f} s"
+            )
+            logger.info(f"edmval: {edmval}")
+
+            # Build a full-length variance vector with the POI+NOI entries
+            # populated from the diagonal of the CG-solved rows and the rest
+            # left as NaN (we did not compute those). add_parms_hist stores
+            # the vector verbatim into the workspace.
+            n = int(fitter.x.shape[0])
+            parms_variances_np = np.full(n, np.nan, dtype=np.float64)
+            for k, i in enumerate(poi_noi_idx):
+                parms_variances_np[int(i)] = cov_rows[k, int(i)]
+            parms_variances = tf.constant(parms_variances_np, dtype=fitter.indata.dtype)
 
     nllvalreduced = fitter.reduced_nll().numpy()
 
     ndfsat = (
-        tf.size(fitter.nobs) - fitter.poi_model.npoi - fitter.indata.nsystnoconstraint
+        tf.size(fitter.nobs)
+        - fitter.param_model.nparams
+        - fitter.indata.nsystnoconstraint
     ).numpy()
 
     chi2_val = 2.0 * nllvalreduced
@@ -353,16 +732,39 @@ def fit(args, fitter, ws, dofit=True):
 
     ws.add_parms_hist(
         values=fitter.x,
-        variances=tf.linalg.diag_part(fitter.cov) if not args.noHessian else None,
+        variances=parms_variances,
         hist_name="parms",
     )
 
-    if not args.noHessian:
-        ws.add_cov_hist(fitter.cov)
-
     if args.nonProfiledImpacts:
         # TODO: based on covariance
-        ws.add_nonprofiled_impacts_hist(*fitter.nonprofiled_impacts_parms())
+        ws.add_impacts_asym_hist(
+            *fitter.nonprofiled_impacts_parms(), base_name="nonprofiled_impacts_asym"
+        )
+
+    if args.asymImpacts:
+        ws.add_impacts_asym_hist(
+            *fitter.asym_impacts_parms(
+                nll_min=fitter.reduced_nll().numpy(),
+                include=args.asymImpactsInclude,
+                exclude=args.asymImpactsExclude,
+                hess_mode=args.asymImpactsHess,
+                contour_xtol=args.asymImpactsTol,
+                contour_gtol=args.asymImpactsTol,
+            ),
+            base_name="impacts_asym",
+        )
+
+    if args.globalAsymImpacts:
+        ws.add_impacts_asym_hist(
+            *fitter.global_asym_impacts_parms(
+                include=args.globalAsymImpactsInclude,
+                exclude=args.globalAsymImpactsExclude,
+                sigma=args.globalAsymImpactsSigma,
+                linear_warmstart=args.globalAsymImpactsLinearWarmstart,
+            ),
+            base_name="global_impacts_asym",
+        )
 
     # Likelihood scans
     if args.scan is not None:
@@ -433,13 +835,34 @@ def fit(args, fitter, ws, dofit=True):
 
 def main():
     start_time = time.time()
-    args = make_parser()
+    args = make_parser().parse_args()
 
     if args.eager:
         tf.config.run_functions_eagerly(True)
 
-    if args.noHessian and args.doImpacts:
-        raise Exception('option "--noHessian" only works without "--doImpacts"')
+    # --noHessian skips computing the postfit Hessian, so the dense
+    # parameter covariance matrix is never available. Any feature that
+    # needs the covariance is incompatible.
+    if args.noHessian:
+        _incompat = []
+        if args.doImpacts:
+            _incompat.append("--doImpacts")
+        if args.computeVariations:
+            _incompat.append("--computeVariations")
+        if args.saveHists and not args.noChi2:
+            _incompat.append("--saveHists (without --noChi2)")
+        if args.computeHistErrors:
+            _incompat.append("--computeHistErrors")
+        if args.computeHistErrorsPerProcess:
+            _incompat.append("--computeHistErrorsPerProcess")
+        if args.computeHistCov:
+            _incompat.append("--computeHistCov")
+        if args.computeHistImpacts:
+            _incompat.append("--computeHistImpacts")
+        if args.computeHistGaussianImpacts:
+            _incompat.append("--computeHistGaussianImpacts")
+        if _incompat:
+            raise Exception("--noHessian is incompatible with: " + ", ".join(_incompat))
 
     global logger
     logger = logging.setup_logger(__file__, args.verbose, args.noColorLogger)
@@ -450,14 +873,25 @@ def main():
     )
     blinded_fits = [f == 0 or (f > 0 and args.toysDataMode == "observed") for f in fits]
 
+    # Default snapshot destination, next to the fit output it belongs to. Only
+    # when periodic snapshots were asked for: the interrupt/failure/convergence
+    # ones are cheap but still a file appearing where the user did not ask for
+    # one, so those follow --snapshotFile only.
+    if args.snapshotFile is None and args.snapshotInterval > 0:
+        stem = _os.path.splitext(args.outname)[0]
+        if args.postfix:
+            stem = f"{stem}_{args.postfix}"
+        args.snapshotFile = _os.path.join(args.outpath, f"{stem}_snapshot.hdf5")
+        _os.makedirs(args.outpath, exist_ok=True)
+
     indata = inputdata.FitInputData(args.filename, args.pseudoData)
 
-    margs = args.poiModel
-    poi_model = ph.load_model(margs[0], indata, *margs[1:], **vars(args))
+    model_specs = args.paramModel or [["Mu"]]
+    param_model = ph.load_models(model_specs, indata, **vars(args))
 
     ifitter = fitter.Fitter(
         indata,
-        poi_model,
+        param_model,
         args,
         do_blinding=any(blinded_fits),
         globalImpactsFromJVP=not args.globalImpactsDisableJVP,
@@ -477,6 +911,14 @@ def main():
             mp.CompositeMapping(mappings),
         ]
 
+    ifitter.tau.assign(args.regularizationStrength)
+    regularizers = []
+    for margs in args.regularization:
+        mapping = mh.load_mapping(margs[1], indata, *margs[2:])
+        regularizer = rh.load_regularizer(margs[0], mapping, dtype=indata.dtype)
+        regularizers.append(regularizer)
+    ifitter.regularizers = regularizers
+
     np.random.seed(args.seed)
     tf.random.set_seed(args.seed)
 
@@ -485,12 +927,33 @@ def main():
         "meta_info": output_tools.make_meta_info_dict(args=args),
         "meta_info_input": ifitter.indata.metadata,
         "procs": ifitter.indata.procs,
-        "pois": ifitter.poi_model.pois,
-        "nois": ifitter.parms[ifitter.poi_model.npoi :][indata.noiidxs],
+        "pois": ifitter.param_model.params[: ifitter.param_model.npoi],
+        "nois": ifitter.parms[ifitter.param_model.nparams :][indata.noiidxs],
     }
 
+    # ParamModel Gaussian priors (if the model declared sigmas). Read straight
+    # from the model (the single source of truth) so downstream tooling can see
+    # what was applied without parsing the rabbit log.
+    if getattr(ifitter, "param_prior_active", False):
+        pm = ifitter.param_model
+        np_dtype = ifitter.indata.dtype.as_numpy_dtype
+        sigmas = np.asarray(pm.prior_sigmas, dtype=np_dtype)
+        mask = np.isfinite(sigmas) & (sigmas > 0)
+        means = getattr(pm, "prior_means", None)
+        means = (
+            np.asarray(pm.xparamdefault).astype(np_dtype)
+            if means is None
+            else np.asarray(means, dtype=np_dtype)
+        )
+        meta["param_priors"] = {
+            "params": pm.params,  # all nparams names
+            "mask": mask,  # bool array
+            "sigmas": np.where(mask, sigmas, np.nan),  # NaN where no prior
+            "means": np.where(mask, means, np.nan),  # NaN where no prior
+        }
+
     with workspace.Workspace(
-        args.output,
+        args.outpath,
         args.outname,
         postfix=args.postfix,
         fitter=ifitter,
@@ -549,7 +1012,7 @@ def main():
 
                 ws.add_parms_hist(
                     values=ifitter.x,
-                    variances=tf.linalg.diag_part(ifitter.cov),
+                    variances=ifitter.var_prefit,
                     hist_name="parms_prefit",
                 )
 
@@ -560,7 +1023,7 @@ def main():
 
                 if not args.prefitOnly:
                     ifitter.set_blinding_offsets(blind=blinded_fits[i])
-                    fit(args, ifitter, ws, dofit=ifit >= 0)
+                    fit(args, ifitter, ws, dofit=ifit >= 0 and not args.noFit)
                     fit_time.append(time.time())
 
                     if args.saveHists:

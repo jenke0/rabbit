@@ -2,9 +2,20 @@
   <img src="data/logo/logo.png" alt="Framework logo" width="180"/>
 </p>
 
-Perform complex profile binned maximum likelihood fits by exploiting state-of-the-art differential programming. 
-Computations are based on the tensorflow 2 library and scipy minimizers with multithreading support on CPU (FIXME: and GPU).
-Implemented approximations in the limit of large sample size to simplify intensive computations.
+rabbit is a Python package for binned profile likelihood fits in high-energy physics, exploiting state-of-the-art differential programming.
+Computations are based on the TensorFlow 2 library for the multithreading support on CPU and GPU, interfaced to SciPy minimizers.
+Implemented approximations in the limit of large sample size simplify intensive computations.
+
+## Tutorials and talks
+
+Jupyter notebook tutorials are available in [notebooks/](notebooks/):
+- [Tutorial 1: Getting started](notebooks/tutorial_1_getting_started.ipynb)
+- [Tutorial 2: Advanced topics (mappings, masked channels, Param models)](notebooks/tutorial_2_advanced.ipynb)
+- [Tutorial 3: Fitting the Top Quark Mass](notebooks/tutorial_3_top_mass.ipynb)
+
+Talks given about rabbit:
+- [ACAT 2025](https://indico.cern.ch/event/1488410/contributions/6561542/)
+- [PyHEP 2025](https://indico.cern.ch/event/1566263/timetable/#1-efficient-binned-profile-lik)
 
 ## Install
 
@@ -19,7 +30,7 @@ pip install rabbit-fit[plotting]
 
 ### Get the code
 
-If you want to have more control or want to develop rabbit you can check it our as (sub) module.
+If you want to have more control or want to develop rabbit you can check it out as a (sub) module.
 
 ```bash
 MY_GIT_USER=$(git config user.github)
@@ -39,23 +50,23 @@ It makes use of the [wums](https://pypi.org/project/wums) package for storing hd
 
 ### In a python virtual environment
 The simplest is to make a python virtual environment. It depends on the python version you are working with (tested with 3.9.18).
-First, make a python version, e.g. in the rabbit base directory (On some machines you have to use `python3`):
+First, make a python virtual environment, e.g. in the rabbit base directory (On some machines you have to use `python3`):
 ```bash
 python -m venv env
 ```
-The activate it and install the necessary packages
+Then activate it and install the necessary packages
 ```bash
 source env/bin/activate
-pip install wums[pickling,plotting] tensorflow tensorflow-probability numpy h5py hist scipy matplotlib mplhep seaborn pandas plotly kaleido
+pip install wums[pickling,plotting] tensorflow tensorflow-probability tf_keras numpy h5py hist scipy matplotlib mplhep seaborn pandas plotly kaleido
 ```
 The packages `matplotlib`, `mplhep`, `seaborn`, `pandas`, `plotly`, and `kaleido` are only needed for the plotting scripts. 
-For the `text2hdf5.py` conversion also the `uproot` package is needed.
+For the `rabbit_text2hdf5.py` conversion also the `uproot` package is needed.
 In case you want to contribute to the development, please also install the linters `isort`, `flake8`, `autoflake`, `black`, and `pylint` used in the pre-commit hooks and the github CI
 Deactivate the environment with `deactivate`.
 
 ### In singularity
 The singularity includes a comprehensive set of packages. 
-But the singularity is missing the `wums` package, you have to check it our as a submodule.
+But the singularity is missing the `wums` package, you have to check it out as a submodule.
 It also comes with custom optimized builds that for example enable numpy and scipy to be run with more than 64 threads (the limit in the standard build).
 Activate the singularity image (to be done every time before running code). 
 ```bash
@@ -68,9 +79,11 @@ Setting up environment variables and python path (to be done every time before r
 source setup.sh
 ```
 
-
 ## Making the input tensor
-An example can be found in ```tests/make_tensor.py -o test_tensor.hdf5```. 
+An example can be found in `tests/make_tensor.py`. Run it with:
+```bash
+python tests/make_tensor.py -o test_tensor.hdf5
+```
 
 ### Systematic uncertainties
 Systematic uncertainties are implemented by default using a log-normal probability density (with a multiplicative effect on the event yield).  Gaussian uncertainties with an additive effect on the event yield can also be used.  This is configured through the `systematic_type` parameter of the `TensorWriter`.
@@ -84,11 +97,11 @@ This is often the case in the standard profile likelihood unfolding.
 By default, systematic variations are asymmetric. 
 However, defining only symmetric variations can be beneficial as a fully symmetric tensor has reduced memory consumption, simplifications in the likelihood function in the fit, and is usually numerically more stable. 
 Different symmetrization options are supported:
- * "average": TBD
- * "conservative": TBD
- * "linear": TBD
- * "quadratic": TBD
-If a systematic variation is added by providing a single histogram, the variation is mirrored. 
+ * `"average"` (default): Symmetrize by taking the average of the up and down variations. This is the recommended option for vairations that are expected to be symmetric.
+ * `"conservative"`: Symmetrize by taking the larger of the two variations by magnitude. This option is less recommended but can be used as cross check against "average".
+ * `"linear"`: Split the asymmetric variation into two symmetric ones (average and half-difference), where the difference term models a piecewise linear dependence on the nuisance parameter. Produces two systematics: `<name>SymAvg` and `<name>SymDiff`. This option is recommended for variations that are expected to be asymmetric.
+ * `"quadratic"`: Like `"linear"` but the difference term is scaled by `sqrt(3)`, modeling a quadratic dependence on the nuisance parameter, and being more conservative than `"linear"`.
+If a systematic variation is added by providing a single histogram, the variation is mirrored.
 
 ### Masked channels
 Masked channels can be added that don't contribute to the likelihood but are evaluated as any other channel. 
@@ -97,30 +110,36 @@ This is done by defining `masked=True` in the `tensorwriter` `add_channel` funct
 This is useful for example to compute unfolded (differential) cross sections and their uncertainties, including global impacts, taking into account all nuisance parameters that affect these channels.
 
 ### text2hdf5
-The input tensor can also be generated from the input used for the [Combine tool](https://link.springer.com/article/10.1007/s41781-024-00121-4)  using the `text2hdf5.py` command.
-This script is mainly intented for user that have these inputs already and want's to perform some cross checks.
+The input tensor can also be generated from the input used for the [Combine tool](https://link.springer.com/article/10.1007/s41781-024-00121-4)  using the `rabbit_text2hdf5.py` command.
+This script is mainly intended for users that have these inputs already and want to perform some cross checks.
 Only basic functionality is supported and for complex models the conversion can take long, it is thus recommended to directly produce the input tensor using the provided interface as explained above. 
 
 ### Diagnostics
 Scripts for diagnosing the input tensor are available:
 Running some checks for empty bins etc.
 ```bash
-debug_inputdata.py test_tensor.hdf5
+rabbit_debug_inputdata.py test_tensor.hdf5
 ```
 Plotting the histograms that are actually used in the fit, supporting adding of systematic variations in the plot:
 ```bash
-rabbit_plot_inputdata.py test_tensor.hdf5 -o results/fitresult.hdf5
+rabbit_plot_inputdata.py test_tensor.hdf5 -o results/
 ```
 
 
 ## Run the fit
 For example:
 ```bash
-rabbit_fit test_tensor.hdf5 -o results/fitresult.hdf5 -t 0 --doImpacts --globalImpacts --saveHists --computeHistErrors
+rabbit_fit.py test_tensor.hdf5 -o results/fitresult.hdf5 -t 0 --doImpacts --globalImpacts --saveHists --computeHistErrors
 ```
 
 ### Bin-by-bin statistical uncertainties
-Bin-by-bin statistical uncertainties on the templates are added by default and can be disabled at runtime using the `--noBinByBinStat` option. The Barlow-Beeston lite method is used to add implicit nuisance parameters for each template bin.  By default this is implemented using a gamma distribution for the probability density, but Gaussian uncertainties can also be used with `--binByBinStatType normal`.
+Bin-by-bin statistical uncertainties on the templates are added by default and can be disabled at runtime using the `--noBinByBinStat` option. 
+The Barlow-Beeston method is used to add implicit nuisance parameters for each template bin.
+By default, the lite variant is used where one parameter is introduced per template bin, for the sum of all processes. 
+The Barlow-Beeston-full method can be used by specifying `--binByBinStatMode full` which introduces implicit nuisance parameters for each process and each template bin.
+By default these nuisance parameters are multiplied to the expected events and follow a gamma distribution for the probability density.
+Gaussian uncertainties can also be used with `--binByBinStatType normal-additive` for an additive scaling or `--binByBinStatType normal-multiplicative` for a multiplicative scaling.
+In the case of `--binByBinStatMode full` and `--binByBinStatType gamma` no analytic solution is available and in each bin a 1D minimization is performed using Newton's method which can significantly increase the time required in the fit. 
 
 ### Mappings
 Perform mappings on the parameters and observables (the histogram bins in the (masked) channels). 
@@ -129,38 +148,60 @@ The first argument is the mapping name followed by arguments passed into the map
 Available mappings are:
  * `BaseMapping`: Compute histograms in all bins and all channels.
  * `Select`: To select histograms of a channel, and perform a selection of processes and bins, supporting rebinning.
- * `Project`: To project histograms to lower dimensions, respecting the covariance matrix across bins.
- * `Normalize`: To normalize histograms to their sum (and project them) e.g. to compute normalized differential cross sections.
+ * `Project`: To project histograms to lower dimensions, respecting the covariance matrix across bins. It is a `Select` where all axes of the channel that are not listed are summed, but the resulting axes follow the order in which they are requested.
+ * `Normalize`: Same as `Project` but the result is normalized to its integral e.g. to compute normalized differential cross sections.
  * `Ratio`: To compute the ratio between channels, processes, or histogram bins.
  * `Normratio`: To compute the ratio of normalized histograms.
 
-Mapping can be specified in the comand line and can feature different parsing syntax. 
-A convension is set up for parsing process and axes selections (e.g. in the `Select` and `Ratio` models). For selecting processes a comma separated list, e.g. <process_0>,<process_1>...
-and for axes selecitons <axis_name_0>:<selection_0>,<axis_name_1>:<selection_1>,... i.e. a comma separated list of axis names and selections separated by ":". 
-Selections can be 
-- integers for bin indices, 
-- `slice()` objects e.g. `slice(0j,2,2)` where `j` can be used to index by complex number, meaing indexing the bin by its axis value,
+Mappings can be specified on the command line and can feature different parsing syntax.
+A convention is set up for parsing process and axes selections (e.g. in the `Select` and `Ratio` mappings). For selecting processes a comma separated list, e.g. <process_0>,<process_1>...
+and for axes selections <axis_name_0>:<selection_0>,<axis_name_1>:<selection_1>,... i.e. a comma separated list of axis names and selections separated by ":".
+Selections can be
+- integers for bin indices,
+- `slice()` objects e.g. `slice(0j,2,2)` where `j` can be used to index by axis value,
 - `sum` to sum all bins of an axis,
 - `rebin()` to rebin an axis with new edges,
-- `None:None` for whch `None` is returned, indicating no selection
+- `None:None` for which `None` is returned, indicating no selection
 Multiple selection per axis can be specified, e.g. `x:slice(2,8),x:sum`.
 
 Custom mappings can be defined.
 They can be specified with the full path to the custom mapping e.g. `-m custom_mapping.MyCustomMapping`. 
-The path must be accessable from your `$PYTHONPATH` variable and an `__ini__.py` file must be in the directory.
+The path must be accessible from your `$PYTHONPATH` variable and an `__init__.py` file must be in the directory.
 
-### POI models
-POI models can be used to introduce paramter of interests (POIs) and modify the number of predicted events in the fit. 
-Baseline models are defined in `rabbit/poi_models/` and can be called in `rabbit_fit` with the `--poiModel` option, e.g. `--poiModel Mu`.
-Only one POI model at a time can be used at a time.
-Available POI models are:
-* `Mu`: Scale the number of events for each signal process with an unconstrained parameter, and background proesses with 1. This is the default model
+### Param models
+Param models can be used to introduce free parameters to modify the number of predicted events in the fit.
+Baseline models are defined in `rabbit/param_models/` and can be called in `rabbit_fit` with the `--paramModel` option, e.g. `--paramModel Mu`.
+Multiple `--paramModel` arguments can be combined via a `CompositeParamModel`.
+Available Param models are:
+* `Mu`: Scale the number of events for each signal process with an unconstrained parameter, and background processes with 1. This is the default model.
 * `Ones`: Return ones, i.e. leave the number of predicted events the same.
-* `Mixture`: Scale the `primary` processes by `x` and the `complementary` processes by `1-x`
+* `Mixture`: Scale the `primary` processes by `x` and the `complementary` processes by `1-x`.
+* `ABCD`: Data-driven background estimation with four regions; D is predicted as `C·A/B` times an MC correction factor (`npoi=0`, `npou=3·n_bins`). CLI: `--paramModel ABCD <process> <ch_A> [ax:val ...] <ch_B> [ax:val ...] <ch_C> [ax:val ...] <ch_D> [ax:val ...]`.
+* `SmoothABCD`: Like `ABCD` but one axis is parameterised with an exponential Chebyshev polynomial of configurable order (default `order=1`), reducing parameters from `3·n_bins` to `3·n_outer·(order+1)`. CLI: `--paramModel SmoothABCD <axis> [order:N] <process> <ch_A> ... <ch_D>`.
+* `ExtendedABCD`: 6-region ABCD with log-linear fake-rate extrapolation: `D = C·Ax·B² / (Bx·A²)` (`npoi=0`, `npou=5·n_bins`). CLI: `--paramModel ExtendedABCD <process> <ch_Ax> [ax:val ...] <ch_Bx> [ax:val ...] <ch_A> [ax:val ...] <ch_B> [ax:val ...] <ch_C> [ax:val ...] <ch_D> [ax:val ...]`.
+* `SmoothExtendedABCD`: Like `ExtendedABCD` but all five free-parameter regions are parameterised with an exponential Chebyshev polynomial along one smoothing axis (`npoi=0`, `npou=5·n_outer·(order+1)`). CLI: `--paramModel SmoothExtendedABCD <axis> [params:<src> | order:N] <process> <ch_Ax> [ax:val ...] <ch_Bx> [ax:val ...] <ch_A> [ax:val ...] <ch_B> [ax:val ...] <ch_C> [ax:val ...] <ch_D> [ax:val ...]`.
+* `ABCDIsoMT`, `ExtendedABCDIsoMT`, `SmoothABCDIsoMT`, `SmoothExtendedABCDIsoMT`: Convenience wrappers for the above models in the (mt × relIso) plane, smoothed along `pt`, that derive all region dicts from a single channel name. CLI: `--paramModel SmoothExtendedABCDIsoMT [params:<src> | order:N] <process> <channel>`.
 
-Custom POI models can be defined.
-They can be specified with the full path to the custom mapping e.g. `--poiModel custom_model.MyCustomModel`. 
-The path must be accessable from your `$PYTHONPATH` variable and an `__ini__.py` file must be in the directory.
+The smooth (extended) ABCD models can start the fit from pre-computed polynomial
+coefficients instead of from zero. `params:<src>` takes them either from an
+[auxiliary bundle](#auxiliary-data) of the input file (`params:aux:<name>`) or from a
+standalone file (`params:<file.hdf5>`, datasets `params` and `order`); it is mutually
+exclusive with `order:N`. With neither token, `SmoothExtendedABCDIsoMT` looks for the
+auxiliary bundle `initial_params_SmoothExtendedABCDIsoMT_<process>_<channel>` and uses
+it if the datacard carries one, so the tool that writes the datacard can ship starting
+values that are guaranteed to match its binning.
+
+### Auxiliary data
+
+`TensorWriter.add_auxiliary(name, {key: array | list[str]})` stores a named bundle of
+arbitrary arrays under a top-level `auxiliary` group. It is not used by the fit itself;
+it is a side channel for param models to carry pre-computed inputs that must stay
+consistent with the datacard. On the read side the bundles are available as
+`FitInputData.auxiliary[name]`.
+
+Custom Param models can be defined.
+They can be specified with the full path to the custom mapping e.g. `--paramModel custom_model.MyCustomModel`. 
+The path must be accessible from your `$PYTHONPATH` variable and an `__init__.py` file must be in the directory.
 
 ## Fit diagnostics
 
@@ -179,9 +220,9 @@ rabbit_print_impacts results/fitresult.hdf5
 
 We use pre-commit hooks and linters in the CI. Activate git pre-commit hooks (only need to do this once when checking out)
 ```
-git config --local include.path ../.gitconfig
+git config --local include.path ../.gitconfig 
 ```
-I case rabbit is included as a submodule, use instead:
+In case rabbit is included as a submodule, use instead:
 ```
 git config --local include.path "$(git rev-parse --show-superproject-working-tree)/.gitconfig"
 ```

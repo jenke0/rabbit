@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 
-import argparse
-
 import numpy as np
 
-from rabbit import io_tools
+from rabbit import io_tools, parsing
 
 sort_choices = []
 sort_choices_abs = [f"abs {s}" for s in sort_choices]
 
 
-def parseArgs():
-    parser = argparse.ArgumentParser()
+def make_parser():
+    parser = parsing.print_parser()
     parser.add_argument(
         "-s",
         "--sort",
@@ -35,17 +33,6 @@ def parseArgs():
         help="Reverse the sorting",
     )
     parser.add_argument(
-        "inputFile",
-        type=str,
-        help="fitresults output",
-    )
-    parser.add_argument(
-        "--result",
-        default=None,
-        type=str,
-        help="fitresults key in file (e.g. 'asimov'). Leave empty for data fit result.",
-    )
-    parser.add_argument(
         "--asym",
         default=False,
         action="store_true",
@@ -63,12 +50,18 @@ def parseArgs():
         default=None,
         help="Exclude nuisances by regular expression",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--noPrefit",
+        default=False,
+        action="store_true",
+        help="Suppress the prefit pull and constraint columns from the printout",
+    )
+    return parser
 
 
 def main():
-    args = parseArgs()
-    fitresult = io_tools.get_fitresult(args.inputFile, args.result)
+    args = make_parser().parse_args()
+    fitresult = io_tools.get_fitresult(args.infile, args.result)
 
     labels, pulls, constraints = io_tools.get_pulls_and_constraints(
         fitresult,
@@ -123,38 +116,53 @@ def main():
         if args.asym:
             constraints_asym = constraints_asym[order]
     nround = 5
-    output_lines = []
-
+    prefit_header = (
+        "" if args.noPrefit else f" ({'pull prefit':>11} +/- {'constraint prefit':>17})"
+    )
     if args.asym:
-        output_lines.append(
-            f"   {'Parameter':<30} {'pull':>6} +/- {'constraint':>10} + {'up':>10} - {'down':>10} ({'pull prefit':>11} +/- {'constraint prefit':>17})"
-        )
-        output_lines.append("   " + "-" * 100)
-        output_lines.extend(
-            [
-                f"   {l:<30} {round(p, nround):>6} +/- {round(c, nround):>10} + {round(c_asym[0], nround):>10} - {round(c_asym[1], nround):>10} ({round(pp, nround):>11} +/- {round(pc, nround):>17})"
-                for l, p, c, c_asym, pp, pc in zip(
-                    labels,
-                    pulls,
-                    constraints,
-                    constraints_asym,
-                    pulls_prefit,
-                    constraints_prefit,
-                )
-            ]
+        header = f"   {'Parameter':<30} {'pull':>6} +/- {'constraint':>10} + {'up':>10} - {'down':>10}{prefit_header}"
+        print(header)
+        print("   " + "-" * (len(header) - 3))
+        print(
+            "\n".join(
+                [
+                    f"   {l:<30} {round(p, nround):>6} +/- {round(c, nround):>10} + {round(c_asym[0], nround):>10} - {round(c_asym[1], nround):>10}"
+                    + (
+                        ""
+                        if args.noPrefit
+                        else f" ({round(pp, nround):>11} +/- {round(pc, nround):>17})"
+                    )
+                    for l, p, c, c_asym, pp, pc in zip(
+                        labels,
+                        pulls,
+                        constraints,
+                        constraints_asym,
+                        pulls_prefit,
+                        constraints_prefit,
+                    )
+                ]
+            )
         )
     else:
-        output_lines.append(
-            f"   {'Parameter':<30} {'pull':>6} +/- {'constraint':>10} ({'pull prefit':>11} +/- {'constraint prefit':>17})"
+        header = (
+            f"   {'Parameter':<30} {'pull':>6} +/- {'constraint':>10}{prefit_header}"
         )
-        output_lines.append("   " + "-" * 100)
-        output_lines.extend(
-            [
-                f"   {l:<30} {round(p, nround):>6} +/- {round(c, nround):>10} ({round(pp, nround):>11} +/- {round(pc, nround):>17})"
-                for l, p, c, pp, pc in zip(
-                    labels, pulls, constraints, pulls_prefit, constraints_prefit
-                )
-            ]
+        print(header)
+        print("   " + "-" * (len(header) - 3))
+        print(
+            "\n".join(
+                [
+                    f"   {l:<30} {round(p, nround):>6} +/- {round(c, nround):>10}"
+                    + (
+                        ""
+                        if args.noPrefit
+                        else f" ({round(pp, nround):>11} +/- {round(pc, nround):>17})"
+                    )
+                    for l, p, c, pp, pc in zip(
+                        labels, pulls, constraints, pulls_prefit, constraints_prefit
+                    )
+                ]
+            )
         )
         
     print("\n".join(output_lines))
