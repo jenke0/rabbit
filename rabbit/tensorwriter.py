@@ -77,11 +77,12 @@ class TensorWriter:
         return values.flatten().astype(self.dtype)
 
     def get_flat_variances(self, h, flow=False):
-        if hasattr(h, "variances"):
+        # if hasattr(h, "variances"):
+        if hasattr(h, "variances") and h.variances() is not None:
             variances = h.variances(flow=flow)
         else:
-            variances = h
-
+            # variances = h
+            variances = h.values(flow=flow)
         if (variances < 0.0).any():
             raise ValueError("Negative variances encountered")
 

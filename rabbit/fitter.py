@@ -19,32 +19,32 @@ def solve_quad_eq(a, b, c):
     return 0.5 * (-b + tf.sqrt(b**2 - 4.0 * a * c)) / a
 
 
-def match_regexp_params(regular_expressions, parameter_names):
-    if isinstance(regular_expressions, str):
-        regular_expressions = [regular_expressions]
-    # Find parameters that match any regex
-    compiled_expressions = [re.compile(expr) for expr in regular_expressions]
-    matched_parameters = [
-        s
-        for s in parameter_names
-        if any(regex.match(s.decode()) for regex in compiled_expressions)
-    ]
-    return matched_parameters
 # def match_regexp_params(regular_expressions, parameter_names):
 #     if isinstance(regular_expressions, str):
 #         regular_expressions = [regular_expressions]
-        
+#     # Find parameters that match any regex
 #     compiled_expressions = [re.compile(expr) for expr in regular_expressions]
-    
-#     matched_parameters = []
-#     for s in parameter_names:
-#         # Decode only if s is a bytes object, otherwise keep it as is
-#         name_to_check = s.decode('utf-8') if isinstance(s, bytes) else s
-        
-#         if any(regex.match(name_to_check) for regex in compiled_expressions):
-#             matched_parameters.append(s)
-            
+#     matched_parameters = [
+#         s
+#         for s in parameter_names
+#         if any(regex.match(s.decode()) for regex in compiled_expressions)
+#     ]
 #     return matched_parameters
+def match_regexp_params(regular_expressions, parameter_names):
+    if isinstance(regular_expressions, str):
+        regular_expressions = [regular_expressions]
+        
+    compiled_expressions = [re.compile(expr) for expr in regular_expressions]
+    
+    matched_parameters = []
+    for s in parameter_names:
+        # Decode only if s is a bytes object, otherwise keep it as is
+        name_to_check = s.decode('utf-8') if isinstance(s, bytes) else s
+        
+        if any(regex.match(name_to_check) for regex in compiled_expressions):
+            matched_parameters.append(s)
+            
+    return matched_parameters
 
 class FitterCallback:
     def __init__(self, xv):
