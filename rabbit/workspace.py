@@ -395,7 +395,6 @@ class Workspace:
             if global_impacts
             else self.grouped_impact_axis
         )
-
         self.add_hist(base_name, [axis_parms, axis_impacts], values=impacts)
 
         name = f"{base_name}_grouped"
